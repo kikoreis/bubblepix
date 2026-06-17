@@ -1,0 +1,19 @@
+[project]
+name = "bubblepix"
+version = "0.1.0"
+description = "Photo sorting, dedup, and family tagging tool"
+requires-python = ">=3.11"
+dependencies = [
+    "Pillow>=10.0",
+    "imagehash>=4.3",
+    "scikit-learn>=1.3",
+    "tqdm>=4.65",
+    "rich>=13.0",
+    "imagededup>=0.3.3",
+]
+
+[project.scripts]
+bubblepix = "bubblepix.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["bubblepix*"]
