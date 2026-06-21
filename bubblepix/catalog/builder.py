@@ -120,7 +120,8 @@ class CatalogBuilder:
         else:
             with ProcessPoolExecutor(max_workers=self.workers) as executor:
                 futures = [executor.submit(_process_file, fp, sr, st)
-                           for fp, sr, st in paths]
+                           for fp, sr, st in paths
+                           if not self.db.file_exists(fp)]
                 for future in tqdm(as_completed(futures), total=len(futures),
                                    desc="Processing", unit="files"):
                     row = future.result()
