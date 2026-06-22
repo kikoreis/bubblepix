@@ -1,6 +1,6 @@
 import hashlib
+import logging
 import math
-import sys
 import warnings
 from PIL import Image, ImageOps
 import imagehash
@@ -19,7 +19,7 @@ def sha256_file(path: str) -> str | None:
                 h.update(chunk)
         return h.hexdigest()
     except (OSError, PermissionError):
-        print(f"  [WARN] Failed to read: {path}", file=sys.stderr)
+        logging.warning("Failed to read: %s", path)
         return None
 
 
@@ -37,7 +37,7 @@ def perceptual_hash(path: str) -> str | None:
             img = Image.open(path)
             for warning in caught:
                 if "DecompressionBomb" in str(warning.message):
-                    print(f"  [WARN] Oversized image: {path}", file=sys.stderr)
+                    logging.warning("Oversized image: %s", path)
         w, h = img.size
         if w * h > MAX_PIXELS:
             scale = math.sqrt(MAX_PIXELS / (w * h))
@@ -47,5 +47,5 @@ def perceptual_hash(path: str) -> str | None:
         h = imagehash.phash(img)
         return str(h)
     except (OSError, ValueError, Image.DecompressionBombError):
-        print(f"  [WARN] Corrupt image: {path}", file=sys.stderr)
+        logging.warning("Corrupt image: %s", path)
         return None

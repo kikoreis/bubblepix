@@ -1,5 +1,5 @@
 import argparse
-import io
+import logging
 import os
 import signal
 import shutil
@@ -28,48 +28,15 @@ def _ensure_process_group():
     signal.signal(signal.SIGHUP, _handler)
 
 
-class _NonBlockingStderr(io.IOBase):
-    """Wraps stderr, suppressing BlockingIOError so the process
-    doesn't freeze when X11 screen lock fills the pty buffer."""
-
-    def __init__(self, wrapped):
-        self._wrapped = wrapped
-        fd = wrapped.fileno()
-        try:
-            os.set_blocking(fd, False)
-        except (OSError, ValueError):
-            pass
-
-    def write(self, data):
-        try:
-            return self._wrapped.write(data)
-        except (BlockingIOError, OSError):
-            pass
-
-    def writable(self):
-        return True
-
-    def flush(self):
-        try:
-            return self._wrapped.flush()
-        except (BlockingIOError, OSError):
-            pass
-
-    def fileno(self):
-        return self._wrapped.fileno()
-
-    def isatty(self):
-        return self._wrapped.isatty()
-
-
-def _unblock_stderr():
-    if sys.stderr and sys.stderr.isatty():
-        sys.stderr = _NonBlockingStderr(sys.stderr)
-
-
 def main():
     _ensure_process_group()
-    _unblock_stderr()
+    log_dir = os.path.expanduser("~/.bubblepix")
+    os.makedirs(log_dir, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=os.path.join(log_dir, "bubblepix.log"),
+        format="[%(levelname)s] %(message)s",
+    )
     parser = argparse.ArgumentParser(prog="bubblepix")
     sub = parser.add_subparsers(dest="command", required=True)
 

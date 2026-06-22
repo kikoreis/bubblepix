@@ -1,3 +1,4 @@
+import logging
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -25,7 +26,7 @@ def ansi(code, text):
 
 def _process_file(filepath: str, source_root: str, source_type: str) -> dict | None:
     if not os.path.exists(filepath):
-        print(f"  [WARN] File disappeared: {filepath}", file=sys.stderr)
+        logging.warning("File disappeared: %s", filepath)
         return None
     filename = os.path.basename(filepath)
     _, ext = os.path.splitext(filename)

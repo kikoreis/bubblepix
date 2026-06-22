@@ -1,8 +1,9 @@
+import datetime
+import logging
+import warnings
+
 from PIL import Image
 from PIL.ExifTags import TAGS as EXIF_TAGS
-import datetime
-import sys
-import warnings
 
 
 CAMERA_MAKE_OVERRIDES = {
@@ -64,14 +65,14 @@ def extract_exif(path: str) -> dict:
             img = Image.open(path)
             for warning in caught:
                 if "DecompressionBomb" in str(warning.message):
-                    print(f"  [WARN] Oversized image: {path}", file=sys.stderr)
+                    logging.warning("Oversized image: %s", path)
         result["width"], result["height"] = img.size
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
             exif_data = img.getexif()
             for warning in caught:
                 if "Corrupt EXIF data" in str(warning.message):
-                    print(f"  [WARN] Corrupt EXIF in {path}", file=sys.stderr)
+                    logging.warning("Corrupt EXIF in %s", path)
         if not exif_data:
             return result
         result["has_exif"] = True
@@ -103,7 +104,7 @@ def extract_exif(path: str) -> dict:
             try:
                 gps_data = exif_data.get_ifd(0x8825)
             except (OSError, ValueError):
-                print(f"  [WARN] Corrupt GPS IFD in {path}", file=sys.stderr)
+                logging.warning("Corrupt GPS IFD in %s", path)
         if gps_data:
             lat = _gps_to_decimal(gps_data.get(2), gps_data.get(1))
             lon = _gps_to_decimal(gps_data.get(4), gps_data.get(3))
