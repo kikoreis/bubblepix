@@ -29,5 +29,5 @@ def perceptual_hash(path: str) -> str | None:
         img = _ensure_rgb(img)
         h = imagehash.phash(img)
         return str(h)
-    except Exception:
+    except (OSError, ValueError, Image.DecompressionBombError):
         return None

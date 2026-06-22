@@ -48,6 +48,10 @@ def main():
     query_p.add_argument("--dates", action="store_true",
                          help="Show all date columns (name_date, exif_original, exif_digitized, video_creation)")
 
+    verify_p = cat_sub.add_parser("verify", help="Check for stale catalog entries")
+    verify_p.add_argument("--prune", action="store_true",
+                          help="Delete stale entries from catalog")
+
     # dedup commands
     dedup = sub.add_parser("dedup", help="Near-duplicate detection")
     dedup.add_argument("--dups-dir", type=str, default="~/.bubblepix/00DUPLICATES",
@@ -96,6 +100,21 @@ def main():
             CatalogQuery(limit=args.limit, where=args.where,
                          order=args.order, fmt=args.format,
                          show_dates=args.dates).run()
+        elif args.subcommand == "verify":
+            from bubblepix.catalog.db import CatalogDB
+            db = CatalogDB()
+            stale = db.verify(prune=args.prune)
+            if stale:
+                msg = f"{stale:,} stale entries found"
+                if args.prune:
+                    msg += " — tombstoned"
+                else:
+                    msg += " (re-run with --prune to tombstone them)"
+                print(msg)
+                if not args.prune:
+                    print("  Re-run with --prune to tombstone them")
+            else:
+                print("All catalog entries exist — no stale entries")
 
     elif args.command == "dedup":
         from bubblepix.catalog.db import CatalogDB
@@ -112,6 +131,10 @@ def main():
                 base, ext = os.path.splitext(os.path.basename(fpath))
                 dest = os.path.join(dups_dir, f"{base}_{hash(fpath) & 0xFFFF}{ext}")
             shutil.move(fpath, dest)
+            db.conn.execute(
+                "UPDATE catalog SET path = ?, moved_to = ? WHERE path = ?",
+                (dest, dest, fpath),
+            )
             return True
 
         if args.subcommand == "find":

@@ -1,6 +1,7 @@
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor, as_completed
+from PIL import Image
 from tqdm import tqdm
 
 from bubblepix.catalog.db import CatalogDB
@@ -23,61 +24,62 @@ def ansi(code, text):
 
 
 def _process_file(filepath: str, source_root: str, source_type: str) -> dict | None:
-    """Process a single file (runs in worker process). Returns row dict or None."""
-    try:
-        filename = os.path.basename(filepath)
-        _, ext = os.path.splitext(filename)
-        ext = ext.lower()
-        stat = os.stat(filepath)
+    if not os.path.exists(filepath):
+        return None
+    filename = os.path.basename(filepath)
+    _, ext = os.path.splitext(filename)
+    ext = ext.lower()
+    stat = os.stat(filepath)
 
-        row = {
-            "path": filepath,
-            "filename": filename,
-            "extension": ext,
-            "size": stat.st_size,
-            "mtime": stat.st_mtime,
-            "sha256": sha256_file(filepath),
-            "phash": None,
-            "exif_date": None,
-            "exif_original_date": None,
-            "exif_digitized_date": None,
-            "exif_modify_date": None,
-            "video_creation_date": None,
-            "name_date": parse_filename_date(filename),
-            "exif_camera": None,
-            "exif_gps_lat": None,
-            "exif_gps_lon": None,
-            "exif_width": None,
-            "exif_height": None,
-            "exif_orientation": None,
-            "has_exif": 0,
-            "source_root": os.path.expanduser(source_root),
-            "source_rel": os.path.relpath(filepath, os.path.expanduser(source_root)),
-            "source_type": source_type,
-        }
+    row = {
+        "path": filepath,
+        "filename": filename,
+        "extension": ext,
+        "size": stat.st_size,
+        "mtime": stat.st_mtime,
+        "sha256": sha256_file(filepath),
+        "phash": None,
+        "exif_date": None,
+        "exif_original_date": None,
+        "exif_digitized_date": None,
+        "exif_modify_date": None,
+        "video_creation_date": None,
+        "name_date": parse_filename_date(filename),
+        "exif_camera": None,
+        "exif_gps_lat": None,
+        "exif_gps_lon": None,
+        "exif_width": None,
+        "exif_height": None,
+        "exif_orientation": None,
+        "has_exif": 0,
+        "source_root": os.path.expanduser(source_root),
+        "source_rel": os.path.relpath(filepath, os.path.expanduser(source_root)),
+        "source_type": source_type,
+    }
 
-        if ext in IMAGE_EXT:
+    if ext in IMAGE_EXT:
+        try:
             row["phash"] = perceptual_hash(filepath)
             exif = extract_exif(filepath)
-        elif ext in VIDEO_EXT:
-            exif = extract_video_metadata(filepath)
-        else:
+        except (OSError, ValueError, Image.DecompressionBombError):
             exif = {}
-        row["exif_date"] = exif.get("date")
-        row["exif_original_date"] = exif.get("original_date")
-        row["exif_digitized_date"] = exif.get("digitized_date")
-        row["exif_modify_date"] = exif.get("modify_date")
-        row["video_creation_date"] = exif.get("creation_date") or exif.get("apple_creation_date")
-        row["exif_camera"] = exif.get("camera")
-        row["exif_gps_lat"] = exif.get("gps_lat")
-        row["exif_gps_lon"] = exif.get("gps_lon")
-        row["exif_width"] = exif.get("width")
-        row["exif_height"] = exif.get("height")
-        row["exif_orientation"] = exif.get("orientation")
-        row["has_exif"] = 1 if exif.get("has_exif") else 0
-        return row
-    except Exception:
-        return None
+    elif ext in VIDEO_EXT:
+        exif = extract_video_metadata(filepath)
+    else:
+        exif = {}
+    row["exif_date"] = exif.get("date")
+    row["exif_original_date"] = exif.get("original_date")
+    row["exif_digitized_date"] = exif.get("digitized_date")
+    row["exif_modify_date"] = exif.get("modify_date")
+    row["video_creation_date"] = exif.get("creation_date") or exif.get("apple_creation_date")
+    row["exif_camera"] = exif.get("camera")
+    row["exif_gps_lat"] = exif.get("gps_lat")
+    row["exif_gps_lon"] = exif.get("gps_lon")
+    row["exif_width"] = exif.get("width")
+    row["exif_height"] = exif.get("height")
+    row["exif_orientation"] = exif.get("orientation")
+    row["has_exif"] = 1 if exif.get("has_exif") else 0
+    return row
 
 
 class CatalogBuilder:

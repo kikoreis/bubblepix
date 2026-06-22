@@ -5,6 +5,8 @@ from pathlib import Path
 
 MIGRATIONS = [
     "ALTER TABLE catalog ADD COLUMN source_type TEXT",
+    "ALTER TABLE catalog ADD COLUMN moved_to TEXT",
+    "ALTER TABLE catalog ADD COLUMN tombstone INTEGER DEFAULT 0",
 ]
 
 SCHEMA = """
@@ -35,7 +37,9 @@ CREATE TABLE IF NOT EXISTS catalog (
     source_type TEXT,
     category TEXT,
     tier TEXT,
-    person_tags TEXT
+    person_tags TEXT,
+    moved_to TEXT,
+    tombstone INTEGER DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_path ON catalog(path);
@@ -97,7 +101,8 @@ class CatalogDB:
         self.conn.commit()
 
     def file_exists(self, path: str) -> bool:
-        cur = self.conn.execute("SELECT 1 FROM catalog WHERE path = ?", (path,))
+        cur = self.conn.execute(
+            "SELECT 1 FROM catalog WHERE path = ? AND tombstone = 0", (path,))
         return cur.fetchone() is not None
 
     def insert_file(self, row: dict) -> None:
@@ -176,6 +181,22 @@ class CatalogDB:
 
     def close(self):
         self.conn.close()
+
+    def verify(self, prune: bool = False):
+        """Find stale entries (files that no longer exist)."""
+        stale = []
+        for (path,) in self.conn.execute(
+                "SELECT path FROM catalog WHERE tombstone = 0"):
+            if not os.path.exists(path):
+                stale.append(path)
+        if not stale:
+            return 0
+        if prune:
+            for path in stale:
+                self.conn.execute(
+                    "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
+            self.commit()
+        return len(stale)
 
     # ── Encodings ──
 

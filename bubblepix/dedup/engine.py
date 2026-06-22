@@ -61,6 +61,8 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
         return 0
     cnn = CNN(verbose=False)
     for i, fp in enumerate(tqdm(paths, desc="Encoding", unit="img")):
+        if not os.path.exists(fp):
+            continue
         vec = cnn.encode_image(fp)
         if vec is not None:
             db.store_encoding(fp, vec.tobytes(), model)
