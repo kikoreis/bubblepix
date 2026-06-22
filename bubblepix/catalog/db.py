@@ -44,6 +44,35 @@ CREATE INDEX IF NOT EXISTS idx_source ON catalog(source_root);
 CREATE INDEX IF NOT EXISTS idx_exif_date ON catalog(exif_date);
 CREATE INDEX IF NOT EXISTS idx_name_date ON catalog(name_date);
 CREATE INDEX IF NOT EXISTS idx_tier ON catalog(tier);
+
+CREATE TABLE IF NOT EXISTS encodings (
+    file_path TEXT PRIMARY KEY
+        REFERENCES catalog(path) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    vector BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_encodings_model ON encodings(model);
+
+CREATE TABLE IF NOT EXISTS dedup_groups (
+    id INTEGER PRIMARY KEY,
+    group_type TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS dedup_group_files (
+    id INTEGER PRIMARY KEY,
+    group_id INTEGER NOT NULL,
+    file_path TEXT NOT NULL,
+    is_original INTEGER DEFAULT 0,
+    similarity REAL,
+    reviewed INTEGER DEFAULT 0,
+    action TEXT,
+    FOREIGN KEY (group_id) REFERENCES dedup_groups(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_dedup_group_files_path
+    ON dedup_group_files(file_path);
 """
 
 
@@ -147,3 +176,40 @@ class CatalogDB:
 
     def close(self):
         self.conn.close()
+
+    # ── Encodings ──
+
+    def get_encodings(self, model: str):
+        """Return list of (file_path, bytes) for all encodings of this model."""
+        return self.conn.execute(
+            "SELECT file_path, vector FROM encodings WHERE model=? ORDER BY rowid",
+            (model,),
+        ).fetchall()
+
+    def get_uncoded_paths(self, model: str):
+        """Return paths of ungrouped image files not yet encoded."""
+        return [r[0] for r in self.conn.execute("""
+            SELECT c.path FROM catalog c
+            WHERE c.extension IN ('.jpg','.jpeg','.png','.heic','.webp')
+              AND NOT EXISTS (
+                  SELECT 1 FROM dedup_group_files f WHERE f.file_path = c.path)
+              AND NOT EXISTS (
+                  SELECT 1 FROM encodings e
+                  WHERE e.file_path = c.path AND e.model=?)
+            ORDER BY c.path
+        """, (model,))]
+
+    def store_encoding(self, path: str, vector_bytes: bytes, model: str):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO encodings (file_path, model, vector) VALUES (?, ?, ?)",
+            (path, model, vector_bytes),
+        )
+
+    def encoding_count(self, model: str) -> int:
+        cur = self.conn.execute(
+            "SELECT COUNT(*) FROM encodings WHERE model=?", (model,),
+        )
+        return cur.fetchone()[0]
+
+    def delete_encodings(self, model: str):
+        self.conn.execute("DELETE FROM encodings WHERE model=?", (model,))

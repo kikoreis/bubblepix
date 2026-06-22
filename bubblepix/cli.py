@@ -1,6 +1,7 @@
 import argparse
 import os
 import shutil
+import struct
 import subprocess
 import sys
 
@@ -25,6 +26,10 @@ def main():
                          help="Archive/organized directory (can repeat)")
     build_p.add_argument("--skip-prefix", type=str, action="append", default=None,
                          help="Skip dirs with this prefix in archive roots (can repeat; default: 00)")
+    build_p.add_argument("--encode", action="store_true",
+                         help="Encode images for CNN-based dedup (slow on first run)")
+    build_p.add_argument("--rebuild-encodings", action="store_true",
+                         help="Re-encode all images from scratch")
 
 
     report_p = cat_sub.add_parser("report", help="Print catalog summary")
@@ -52,8 +57,8 @@ def main():
     find_p = dedup_sub.add_parser("find", help="Find near-duplicate groups")
     find_p.add_argument("--threshold", type=float, default=0.75,
                         help="CNN similarity threshold (default: 0.75)")
-    find_p.add_argument("--dry-run", action="store_true",
-                        help="Show candidates without running CNN")
+    find_p.add_argument("--limit", type=int, default=0,
+                        help="Max ungrouped images for CNN (0 = unlimited)")
 
     review_p = dedup_sub.add_parser("review", help="Review found pairs interactively")
     review_p.add_argument("--limit", type=int, default=20,
@@ -68,12 +73,21 @@ def main():
     if args.command == "catalog":
         if args.subcommand == "build":
             from bubblepix.catalog import CatalogBuilder
+            from bubblepix.dedup.engine import MODEL, encode_unencoded_images
+            from bubblepix.catalog.db import CatalogDB
+            db = CatalogDB()
+            if args.rebuild_encodings:
+                print("Removing stored encodings...")
+                db.delete_encodings(MODEL)
+                db.commit()
             builder = CatalogBuilder(dry_run=args.dry_run,
                                       ingest_dirs=args.ingest,
                                       archive_dirs=args.archive,
                                       limit=args.limit, workers=args.workers,
                                       skip_prefixes=tuple(args.skip_prefix) if args.skip_prefix else None)
             builder.run()
+            if args.encode and not args.dry_run:
+                encode_unencoded_images(db)
         elif args.subcommand == "report":
             from bubblepix.catalog import CatalogReport
             CatalogReport(show_dups=args.dups).run()
@@ -103,6 +117,7 @@ def main():
         if args.subcommand == "find":
             from bubblepix.dedup import DedupEngine
             engine = DedupEngine(threshold=args.threshold, dups_dir=args.dups_dir)
+
             total_groups = 0
 
             print("Finding phash-based near-duplicates...")
@@ -112,12 +127,15 @@ def main():
             total_groups += len(phash_groups)
 
             print("Finding CNN-based near-duplicates (hub clustering)...")
-            cnn_groups = engine.find_cnn_groups_all_images(db)
+            cnn_groups = engine.find_cnn_groups_all_images(db, limit=args.limit)
             print(f"  Found {len(cnn_groups):,} CNN groups")
             if cnn_groups:
                 engine.store_groups(db, cnn_groups, "cnn")
                 total_groups += len(cnn_groups)
 
+            from bubblepix.dedup.engine import MODEL
+            encoded = db.encoding_count(MODEL)
+            print(f"  {encoded:,} images encoded")
             print(f"Stored {total_groups:,} near-duplicate groups in catalog")
 
         elif args.subcommand == "review":
@@ -158,7 +176,13 @@ def main():
                 for fid, fpath, is_orig, sim, action in files:
                     tag = "KEEP" if is_orig else "MOVE"
                     fsize = os.path.getsize(fpath) if os.path.exists(fpath) else 0
-                    sim_str = f" sim={sim:.3f}" if sim is not None else ""
+                    sim_val = None
+                    if sim is not None:
+                        if isinstance(sim, bytes):
+                            sim_val = struct.unpack("f", sim)[0]
+                        else:
+                            sim_val = float(sim)
+                    sim_str = f" sim={sim_val:.3f}" if sim_val is not None else ""
                     print(f"  [{tag}] {os.path.basename(fpath):40s}  {fsize//1024:>8}KB{sim_str}  {fpath}")
                 if can_gui:
                     paths = [f[1] for f in files if os.path.exists(f[1])]

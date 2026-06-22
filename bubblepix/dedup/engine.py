@@ -1,17 +1,13 @@
 import os
 import sys
-import tempfile
-import shutil
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 
-from bubblepix.catalog.db import CatalogDB
+import numpy as np
+from sklearn.neighbors import NearestNeighbors
 
-try:
-    from imagededup.methods import CNN
-    HAS_IMAGEDEDUP = True
-except ImportError:
-    HAS_IMAGEDEDUP = False
+from bubblepix.catalog.db import CatalogDB
 
 
 PHASH_GROUP_SQL = """
@@ -19,57 +15,66 @@ PHASH_GROUP_SQL = """
     FROM catalog
     WHERE extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
       AND source_root NOT LIKE ?
-      AND phash IS NOT NULL
+      AND phash IS NOT NULL AND phash != '0000000000000000'
+      AND NOT EXISTS (
+        SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
       AND phash IN (
         SELECT phash FROM catalog
-        WHERE phash IS NOT NULL
+        WHERE phash IS NOT NULL AND phash != '0000000000000000'
           AND extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
           AND source_root NOT LIKE ?
+          AND NOT EXISTS (
+            SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
         GROUP BY phash
         HAVING COUNT(DISTINCT path) > 1
       )
     ORDER BY phash, size DESC
 """
 
-CNN_IMAGE_SQL = """
+UNGOUPED_META_SQL = """
     SELECT path, source_root, source_rel, size, source_type
-    FROM catalog c
+    FROM catalog
     WHERE extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
       AND source_root NOT LIKE ?
       AND NOT EXISTS (
-        SELECT 1 FROM dedup_group_files f WHERE f.file_path = c.path
+        SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path
       )
-    ORDER BY size DESC
 """
 
 
-def symlink_files(file_map: dict[str, str], target_dir: str):
-    for short_name, full_path in file_map.items():
-        link_path = os.path.join(target_dir, short_name)
-        if not os.path.exists(link_path):
-            os.symlink(full_path, link_path)
+
+MODEL = "mobilenetv3_small"
 
 
-def clean_temp_dir(tmp_dir: str):
+def encode_unencoded_images(db: CatalogDB, limit: int = 0,
+                            model: str = MODEL) -> int:
     try:
-        shutil.rmtree(tmp_dir)
-    except OSError:
-        pass
+        from imagededup.methods import CNN
+    except ImportError:
+        sys.exit("imagededup not installed. Run: pip install imagededup")
+    from tqdm import tqdm
+
+    paths = db.get_uncoded_paths(model)
+    if limit > 0:
+        paths = paths[:limit]
+    if not paths:
+        return 0
+    cnn = CNN(verbose=False)
+    for i, fp in enumerate(tqdm(paths, desc="Encoding", unit="img")):
+        vec = cnn.encode_image(fp)
+        if vec is not None:
+            db.store_encoding(fp, vec.tobytes(), model)
+        if i % 100 == 0:
+            db.commit()
+    db.commit()
+    return len(paths)
 
 
 class DedupEngine:
-    def __init__(self, threshold: float = 0.75, dups_dir: str = "~/.bubblepix/00DUPLICATES"):
+    def __init__(self, threshold: float = 0.75,
+                 dups_dir: str = "~/.bubblepix/00DUPLICATES"):
         self.threshold = threshold
         self.dups_dir = os.path.expanduser(dups_dir)
-        self._cnn = None
-
-    @property
-    def cnn(self):
-        if self._cnn is None:
-            if not HAS_IMAGEDEDUP:
-                sys.exit("imagededup not installed. Run: pip install imagededup")
-            self._cnn = CNN(verbose=False)
-        return self._cnn
 
     # ── Helpers ──
 
@@ -118,49 +123,46 @@ class DedupEngine:
             result.append(files)
         return result
 
-    # ── CNN groups (hub clustering on all ungrouped images) ──
+    # ── CNN groups (NN hub clustering, assumes encodings already exist) ──
 
-    def find_cnn_groups_all_images(self, db: CatalogDB) -> list[list[dict]]:
-        pattern = f"{self.dups_dir}/%"
-        cur = db.conn.execute(CNN_IMAGE_SQL, (pattern,))
-        rows = cur.fetchall()
-        if len(rows) < 2:
+    def find_cnn_groups_all_images(self, db: CatalogDB,
+                                   limit: int = 0) -> list[list[dict]]:
+        all_rows = db.get_encodings(MODEL)
+        if len(all_rows) < 2:
             return []
 
+        paths = [r[0] for r in all_rows]
+        blobs = [r[1] for r in all_rows]
+        matrix = np.frombuffer(b''.join(blobs), dtype=np.float32).reshape(len(blobs), -1)
+
+        pattern = f"{self.dups_dir}/%"
+        cur = db.conn.execute(UNGOUPED_META_SQL, (pattern,))
         meta = {
-            r[0]: {"path": r[0], "source_root": r[1], "source_rel": r[2],
+            r[0]: {"source_root": r[1], "source_rel": r[2],
                    "size": r[3], "source_type": r[4]}
-            for r in rows
+            for r in cur.fetchall()
         }
 
-        tmp_dir = tempfile.mkdtemp(prefix="bubblepix_cnn_")
-        try:
-            short_to_full = {}
-            for fp in meta:
-                short = os.path.basename(fp)
-                if short in short_to_full:
-                    base, ext = os.path.splitext(short)
-                    short = f"{base}_{hash(fp) & 0xFFFF}{ext}"
-                short_to_full[short] = fp
-            symlink_files(short_to_full, tmp_dir)
-            encodings = self.cnn.encode_images(image_dir=tmp_dir)
-            if len(encodings) < 2:
-                return []
-            duplicates = self.cnn.find_duplicates(
-                encoding_map=encodings,
-                min_similarity_threshold=self.threshold,
-                scores=True,
-            )
-        finally:
-            clean_temp_dir(tmp_dir)
+        ungrouped_paths = [p for p in paths if p in meta]
+        if limit > 0:
+            ungrouped_paths = ungrouped_paths[:limit]
+        if len(ungrouped_paths) < 2:
+            return []
+        path_to_idx = {p: i for i, p in enumerate(paths)}
+        ungrouped_idx = [path_to_idx[p] for p in ungrouped_paths]
+        ungrouped_matrix = matrix[ungrouped_idx]
 
-        full_to_short = {v: k for k, v in short_to_full.items()}
+        nn = NearestNeighbors(radius=1.0 - self.threshold,
+                              metric="cosine", algorithm="brute", n_jobs=-1)
+        nn.fit(ungrouped_matrix)
+        sparse_graph = nn.radius_neighbors_graph(ungrouped_matrix, mode="distance")
 
-        all_paths = sorted(
-            meta.keys(),
-            key=lambda p: (
-                self._org_score(meta[p]["source_type"], meta[p]["source_rel"]),
-                meta[p]["size"],
+        order = sorted(
+            range(len(ungrouped_paths)),
+            key=lambda i: (
+                self._org_score(meta[ungrouped_paths[i]]["source_type"],
+                                meta[ungrouped_paths[i]]["source_rel"]),
+                meta[ungrouped_paths[i]]["size"],
             ),
             reverse=True,
         )
@@ -168,19 +170,23 @@ class DedupEngine:
         assigned: set[str] = set()
         groups: list[list[dict]] = []
 
-        for hub_path in all_paths:
+        for hub_rank in order:
+            hub_path = ungrouped_paths[hub_rank]
             if hub_path in assigned:
                 continue
-            hub_short = full_to_short.get(hub_path)
-            if not hub_short or hub_short not in duplicates:
+            row = sparse_graph[hub_rank]
+            neigh_indices = row.indices
+            if len(neigh_indices) < 2:
                 assigned.add(hub_path)
                 continue
 
             members = []
-            for dup_short, score in duplicates[hub_short]:
-                dup_path = short_to_full.get(dup_short)
-                if dup_path and dup_path != hub_path and dup_path not in assigned:
-                    members.append({"path": dup_path, "similarity": float(score)})
+            for ni in neigh_indices:
+                npath = ungrouped_paths[ni]
+                if npath != hub_path and npath not in assigned:
+                    dist = row[0, ni]
+                    sim = float(max(0.0, 1.0 - dist))
+                    members.append({"path": npath, "similarity": sim})
 
             if not members:
                 assigned.add(hub_path)
@@ -189,7 +195,8 @@ class DedupEngine:
             group = [{"path": hub_path, "is_original": True, "similarity": None}]
             group[0].update(meta[hub_path])
             for m in members:
-                entry = {"path": m["path"], "is_original": False, "similarity": m["similarity"]}
+                entry = {"path": m["path"], "is_original": False,
+                         "similarity": m["similarity"]}
                 entry.update(meta[m["path"]])
                 group.append(entry)
                 assigned.add(m["path"])
@@ -201,25 +208,6 @@ class DedupEngine:
     # ── Storage ──
 
     def store_groups(self, db: CatalogDB, groups: list[list[dict]], group_type: str):
-        db.conn.execute("""
-            CREATE TABLE IF NOT EXISTS dedup_groups (
-                id INTEGER PRIMARY KEY,
-                group_type TEXT NOT NULL,
-                created_at TEXT DEFAULT (datetime('now'))
-            )
-        """)
-        db.conn.execute("""
-            CREATE TABLE IF NOT EXISTS dedup_group_files (
-                id INTEGER PRIMARY KEY,
-                group_id INTEGER NOT NULL,
-                file_path TEXT NOT NULL,
-                is_original INTEGER DEFAULT 0,
-                similarity REAL,
-                reviewed INTEGER DEFAULT 0,
-                action TEXT,
-                FOREIGN KEY (group_id) REFERENCES dedup_groups(id)
-            )
-        """)
         for group_files in groups:
             gid = db.conn.execute(
                 "INSERT INTO dedup_groups (group_type) VALUES (?)",
