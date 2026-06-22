@@ -1,12 +1,34 @@
 import argparse
 import os
+import signal
 import shutil
 import struct
 import subprocess
 import sys
 
 
+def _ensure_process_group():
+    """Put this process in its own group so children inherit it.
+    On SIGTERM/SIGHUP, kill the whole group instead of just the parent."""
+    try:
+        os.setpgrp()
+    except PermissionError:
+        pass
+
+    def _handler(signum, frame):
+        signal.signal(signum, signal.SIG_DFL)
+        try:
+            os.killpg(os.getpgid(0), signum)
+        except (OSError, ValueError):
+            pass
+        sys.exit(1)
+
+    signal.signal(signal.SIGTERM, _handler)
+    signal.signal(signal.SIGHUP, _handler)
+
+
 def main():
+    _ensure_process_group()
     parser = argparse.ArgumentParser(prog="bubblepix")
     sub = parser.add_subparsers(dest="command", required=True)
 
