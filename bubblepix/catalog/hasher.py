@@ -19,6 +19,7 @@ def sha256_file(path: str) -> str | None:
                 h.update(chunk)
         return h.hexdigest()
     except (OSError, PermissionError):
+        print(f"  [WARN] Failed to read: {path}", file=sys.stderr)
         return None
 
 
@@ -46,4 +47,5 @@ def perceptual_hash(path: str) -> str | None:
         h = imagehash.phash(img)
         return str(h)
     except (OSError, ValueError, Image.DecompressionBombError):
+        print(f"  [WARN] Corrupt image: {path}", file=sys.stderr)
         return None

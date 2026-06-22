@@ -59,15 +59,20 @@ def extract_exif(path: str) -> dict:
         "has_exif": False,
     }
     try:
-        img = Image.open(path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            img = Image.open(path)
+            for warning in caught:
+                if "DecompressionBomb" in str(warning.message):
+                    print(f"  [WARN] Oversized image: {path}", file=sys.stderr)
         result["width"], result["height"] = img.size
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            exif_data = img._getexif()
+            exif_data = img.getexif()
             for warning in caught:
                 if "Corrupt EXIF data" in str(warning.message):
                     print(f"  [WARN] Corrupt EXIF in {path}", file=sys.stderr)
-        if exif_data is None:
+        if not exif_data:
             return result
         result["has_exif"] = True
 
@@ -91,9 +96,17 @@ def extract_exif(path: str) -> dict:
             result["width"], result["height"] = result["height"], result["width"]
 
         gps_info = exif.get("GPSInfo")
-        if gps_info:
-            lat = _gps_to_decimal(gps_info.get(2), gps_info.get(1))
-            lon = _gps_to_decimal(gps_info.get(4), gps_info.get(3))
+        gps_data = None
+        if isinstance(gps_info, dict):
+            gps_data = gps_info
+        elif gps_info is not None:
+            try:
+                gps_data = exif_data.get_ifd(0x8825)
+            except (OSError, ValueError):
+                print(f"  [WARN] Corrupt GPS IFD in {path}", file=sys.stderr)
+        if gps_data:
+            lat = _gps_to_decimal(gps_data.get(2), gps_data.get(1))
+            lon = _gps_to_decimal(gps_data.get(4), gps_data.get(3))
             if lat is not None:
                 result["gps_lat"] = lat
             if lon is not None:
