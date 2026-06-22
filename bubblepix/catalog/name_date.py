@@ -15,7 +15,10 @@ PAT_CAMERA = re.compile(r"(?:IMG_|VID_)?(\d{4})(\d{2})(\d{2})_(\d{2})(\d{2})(\d{
 
 # iPhone burst:  "IMG_1234.JPG"  (no date in name — skip)
 
-PATTERNS = [PAT_DROPBOX, PAT_SCREENSHOT, PAT_WHATSAPP, PAT_CAMERA]
+# PHOTO:  "PHOTO-2026-05-30-15-44-01.jpg"
+PAT_PHOTO = re.compile(r"PHOTO-(\d{4})-(\d{2})-(\d{2})-(\d{2})-(\d{2})-(\d{2})")
+
+PATTERNS = [PAT_DROPBOX, PAT_SCREENSHOT, PAT_WHATSAPP, PAT_CAMERA, PAT_PHOTO]
 
 
 def parse_filename_date(filename: str) -> str | None:
