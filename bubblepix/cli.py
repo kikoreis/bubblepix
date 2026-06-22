@@ -311,6 +311,12 @@ def main():
             db.commit()
             print(f"Moved {moved} file(s) to {dups_dir}.")
 
+def main_entry():
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
+        sys.exit(130)
 
 if __name__ == "__main__":
-    main()
+    main_entry()
