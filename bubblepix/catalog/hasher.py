@@ -1,4 +1,5 @@
 import hashlib
+import math
 import sys
 import warnings
 from PIL import Image, ImageOps
@@ -22,7 +23,6 @@ def sha256_file(path: str) -> str | None:
 
 
 def _ensure_rgb(img: Image.Image) -> Image.Image:
-    """Convert image to RGB, compositing alpha onto white if needed."""
     if img.mode in ('LA', 'PA', 'RGBA'):
         bg = Image.new('RGBA', img.size, (255, 255, 255, 255))
         img = Image.alpha_composite(bg, img.convert('RGBA'))
@@ -39,7 +39,8 @@ def perceptual_hash(path: str) -> str | None:
                     print(f"  [WARN] Oversized image: {path}", file=sys.stderr)
         w, h = img.size
         if w * h > MAX_PIXELS:
-            return None
+            scale = math.sqrt(MAX_PIXELS / (w * h))
+            img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
         img = ImageOps.exif_transpose(img) or img
         img = _ensure_rgb(img)
         h = imagehash.phash(img)
