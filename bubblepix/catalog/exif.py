@@ -113,5 +113,5 @@ def _gps_to_decimal(coord, ref):
         if ref in ("S", "W"):
             decimal = -decimal
         return round(decimal, 6)
-    except (TypeError, IndexError, ValueError):
+    except (TypeError, IndexError, ValueError, ZeroDivisionError):
         return None

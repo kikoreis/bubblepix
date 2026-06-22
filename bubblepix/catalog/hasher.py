@@ -1,6 +1,13 @@
 import hashlib
+import sys
+import warnings
 from PIL import Image, ImageOps
 import imagehash
+
+
+MAX_MP = 50
+MAX_PIXELS = MAX_MP * 1_000_000
+Image.MAX_IMAGE_PIXELS = MAX_PIXELS * 2
 
 
 def sha256_file(path: str) -> str | None:
@@ -24,7 +31,15 @@ def _ensure_rgb(img: Image.Image) -> Image.Image:
 
 def perceptual_hash(path: str) -> str | None:
     try:
-        img = Image.open(path)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            img = Image.open(path)
+            for warning in caught:
+                if "DecompressionBomb" in str(warning.message):
+                    print(f"  [WARN] Oversized image: {path}", file=sys.stderr)
+        w, h = img.size
+        if w * h > MAX_PIXELS:
+            return None
         img = ImageOps.exif_transpose(img) or img
         img = _ensure_rgb(img)
         h = imagehash.phash(img)

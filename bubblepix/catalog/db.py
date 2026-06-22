@@ -158,10 +158,11 @@ class CatalogDB:
                               OR name_date IS NOT NULL
                          THEN 1 ELSE 0 END) as with_date,
                 SUM(CASE WHEN sha256 IS NOT NULL THEN 1 ELSE 0 END) as hashed,
+                SUM(CASE WHEN phash IS NULL THEN 1 ELSE 0 END) as no_phash,
                 SUM(size) as total_bytes
             FROM catalog
         """)
-        return dict(zip(["total", "with_date", "hashed", "total_bytes"], cur.fetchone()))
+        return dict(zip(["total", "with_date", "hashed", "no_phash", "total_bytes"], cur.fetchone()))
 
     def format_summary(self):
         s = self.summary()

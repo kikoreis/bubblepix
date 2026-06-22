@@ -110,6 +110,7 @@ class CatalogBuilder:
         file_count = 0
         new_count = 0
         upd_count = 0
+        skip_count = 0
 
         paths = list(walker.walk())
         if self.limit > 0:
@@ -128,6 +129,7 @@ class CatalogBuilder:
                                    desc="Processing", unit="files"):
                     row = future.result()
                     if row is None:
+                        skip_count += 1
                         continue
                     file_count += 1
                     if self.db.file_exists(row["path"]):
@@ -144,9 +146,14 @@ class CatalogBuilder:
             gb = (s["total_bytes"] or 0) / (1024**3)
             dup_count = len(self.db.dup_groups())
             orphan_count = len(self.db.orphan_files())
+            no_phash = s["total"] - s["hashed"]
             print(f"\nCatalog: {ansi('1', self.db.db_path)}")
             print(f"  {s['total']:>8,} files  ({gb:.1f} GB)")
             print(f"  {new_count:>8,} new  {upd_count:>8,} updated")
+            if skip_count:
+                print(f"  {skip_count:>8,} skipped (missing or corrupt)")
+            if s["no_phash"]:
+                print(f"  {s['no_phash']:>8,} no phash (non-image or oversized)")
             print(f"  {s['with_date']:>8,} with EXIF date")
             print(f"  {orphan_count:>8,} without date (orphans)")
             print(f"  {dup_count:>8,} duplicate groups")
