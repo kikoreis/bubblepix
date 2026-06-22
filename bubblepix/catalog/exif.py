@@ -119,11 +119,13 @@ def extract_exif(path: str) -> dict:
 
 
 def _gps_to_decimal(coord, ref):
-    if coord is None:
+    if coord is None or not ref:
         return None
     try:
         degrees, minutes, seconds = float(coord[0]), float(coord[1]), float(coord[2])
         decimal = degrees + minutes / 60.0 + seconds / 3600.0
+        if decimal == 0.0:
+            return None
         if ref in ("S", "W"):
             decimal = -decimal
         return round(decimal, 6)
