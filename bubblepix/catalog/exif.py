@@ -1,6 +1,8 @@
 from PIL import Image
 from PIL.ExifTags import TAGS as EXIF_TAGS
 import datetime
+import sys
+import warnings
 
 
 CAMERA_MAKE_OVERRIDES = {
@@ -59,7 +61,12 @@ def extract_exif(path: str) -> dict:
     try:
         img = Image.open(path)
         result["width"], result["height"] = img.size
-        exif_data = img._getexif()
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            exif_data = img._getexif()
+            for warning in caught:
+                if "Corrupt EXIF data" in str(warning.message):
+                    print(f"  [WARN] Corrupt EXIF in {path}", file=sys.stderr)
         if exif_data is None:
             return result
         result["has_exif"] = True
@@ -73,19 +80,16 @@ def extract_exif(path: str) -> dict:
         model = exif.get("Model", "")
         result["camera"] = _normalize_camera(make, model)
 
-        # Individual EXIF dates
         result["original_date"] = _parse_exif_date(exif.get("DateTimeOriginal"))
         result["digitized_date"] = _parse_exif_date(exif.get("DateTimeDigitized"))
         result["modify_date"] = _parse_exif_date(exif.get("DateTime"))
         result["date"] = result["original_date"] or result["digitized_date"] or result["modify_date"]
 
-        # Orientation — normalize W/H for rotated images (tags 5-8)
         orient = exif.get("Orientation")
         result["orientation"] = orient
         if orient is not None and orient >= 5:
             result["width"], result["height"] = result["height"], result["width"]
 
-        # GPS
         gps_info = exif.get("GPSInfo")
         if gps_info:
             lat = _gps_to_decimal(gps_info.get(2), gps_info.get(1))
@@ -95,7 +99,7 @@ def extract_exif(path: str) -> dict:
             if lon is not None:
                 result["gps_lon"] = lon
 
-    except Exception:
+    except (OSError, ValueError, Image.DecompressionBombError):
         pass
     return result
 
