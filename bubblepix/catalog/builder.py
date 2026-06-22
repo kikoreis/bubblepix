@@ -127,7 +127,8 @@ class CatalogBuilder:
                            for fp, sr, st in paths
                            if not self.db.file_exists(fp)]
                 for future in tqdm(as_completed(futures), total=len(futures),
-                                   desc="Processing", unit="files"):
+                                   desc="Processing", unit="files",
+                                   smoothing=0.05):
                     row = future.result()
                     if row is None:
                         skip_count += 1

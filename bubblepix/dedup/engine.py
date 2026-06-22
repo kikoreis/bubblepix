@@ -60,7 +60,7 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
     if not paths:
         return 0
     cnn = CNN(verbose=False)
-    for i, fp in enumerate(tqdm(paths, desc="Encoding", unit="img")):
+    for i, fp in enumerate(tqdm(paths, desc="Encoding", unit="img", smoothing=0.05)):
         if not os.path.exists(fp):
             print(f"  [WARN] File missing during encoding: {fp}", file=sys.stderr)
             continue
