@@ -35,7 +35,8 @@ def main():
     logging.basicConfig(
         level=logging.INFO,
         filename=os.path.join(log_dir, "bubblepix.log"),
-        format="[%(levelname)s] %(message)s",
+        format="[%(levelname)s] %(asctime)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     parser = argparse.ArgumentParser(prog="bubblepix")
     sub = parser.add_subparsers(dest="command", required=True)
