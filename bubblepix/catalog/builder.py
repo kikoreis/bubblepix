@@ -25,7 +25,6 @@ def _worker_init():
         filename=os.path.join(_LOG_DIR, "bubblepix.log"),
         format="[%(levelname)s] %(asctime)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
-        force=True,
     )
 
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".tiff"}
@@ -160,21 +159,26 @@ class CatalogBuilder:
                     elif fp in existing_paths:
                         continue
                     futures.append(executor.submit(_process_file, fp, sr, st))
-                for future in tqdm(as_completed(futures), total=len(futures),
-                                   desc="Processing", unit="files",
-                                   smoothing=0.05):
-                    row = future.result()
-                    if row is None:
-                        skip_count += 1
-                        continue
-                    file_count += 1
-                    if self.db.file_exists(row["path"]):
-                        upd_count += 1
-                    else:
-                        new_count += 1
-                    self.db.insert_file(row)
-                    if file_count % 5000 == 0:
-                        self.db.commit()
+                try:
+                    for future in tqdm(as_completed(futures), total=len(futures),
+                                       desc="Processing", unit="files",
+                                       smoothing=0.05):
+                        row = future.result()
+                        if row is None:
+                            skip_count += 1
+                            continue
+                        file_count += 1
+                        if self.db.file_exists(row["path"]):
+                            upd_count += 1
+                        else:
+                            new_count += 1
+                        self.db.insert_file(row)
+                        if file_count % 5000 == 0:
+                            self.db.commit()
+                except KeyboardInterrupt:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    print("\nShutting down...")
+                    os._exit(130)
 
         if not self.dry_run:
             self.db.commit()
