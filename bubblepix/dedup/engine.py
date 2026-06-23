@@ -76,7 +76,19 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
         if not os.path.exists(fp):
             logging.warning("File missing during encoding: %s", fp)
             continue
-        vec = cnn.encode_image(fp)
+        if fp.lower().endswith(('.heic', '.heics', '.heif', '.heifs', '.hif')):
+            try:
+                heif_file = pillow_heif.open_heif(fp)
+                pil_img = heif_file.to_pillow()
+                if pil_img.mode != 'RGB':
+                    pil_img = pil_img.convert('RGB')
+                import numpy as np
+                vec = cnn.encode_image(image_array=np.array(pil_img))
+            except Exception:
+                logging.warning("Failed to encode HEIC: %s", fp)
+                vec = None
+        else:
+            vec = cnn.encode_image(fp)
         if vec is not None:
             db.store_encoding(fp, vec.tobytes(), model)
         if i % 100 == 0:
