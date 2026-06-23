@@ -91,6 +91,9 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
             vec = cnn.encode_image(fp)
         if vec is not None:
             db.store_encoding(fp, vec.tobytes(), model)
+        else:
+            db.store_encoding(fp, b'', model)
+            logging.warning("Encoding failed (stored sentinel): %s", fp)
         if i % 100 == 0:
             db.commit()
     db.commit()

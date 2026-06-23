@@ -204,7 +204,7 @@ class CatalogDB:
     def get_encodings(self, model: str):
         """Return list of (file_path, bytes) for all encodings of this model."""
         return self.conn.execute(
-            "SELECT file_path, vector FROM encodings WHERE model=? ORDER BY rowid",
+            "SELECT file_path, vector FROM encodings WHERE model=? AND length(vector) > 0 ORDER BY rowid",
             (model,),
         ).fetchall()
 
