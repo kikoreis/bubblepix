@@ -11,6 +11,25 @@ from sklearn.neighbors import NearestNeighbors
 from bubblepix.catalog.db import CatalogDB
 
 
+SHA256_GROUP_SQL = """
+    SELECT sha256, path, source_root, source_rel, size, source_type
+    FROM catalog
+    WHERE sha256 IS NOT NULL
+      AND source_root NOT LIKE ?
+      AND NOT EXISTS (
+        SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
+      AND sha256 IN (
+        SELECT sha256 FROM catalog
+        WHERE sha256 IS NOT NULL
+          AND source_root NOT LIKE ?
+          AND NOT EXISTS (
+            SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
+        GROUP BY sha256
+        HAVING COUNT(DISTINCT path) > 1
+      )
+    ORDER BY sha256, size DESC
+"""
+
 PHASH_GROUP_SQL = """
     SELECT phash, path, source_root, source_rel, size, source_type
     FROM catalog
@@ -127,6 +146,31 @@ class DedupEngine:
             if cur > best:
                 best_i = i
         return best_i
+
+    # ── SHA256 groups ──
+
+    def find_sha256_groups(self, db: CatalogDB) -> list[list[dict]]:
+        pattern = f"{self.dups_dir}/%"
+        groups: dict[str, list[dict]] = {}
+        cur = db.conn.execute(SHA256_GROUP_SQL, (pattern, pattern))
+        for row in cur.fetchall():
+            sha256, path, root, rel, size, stype = row
+            if sha256 not in groups:
+                groups[sha256] = []
+            groups[sha256].append({
+                "path": path, "source_root": root, "source_rel": rel,
+                "size": size, "source_type": stype,
+            })
+        result = []
+        for _sha256, files in groups.items():
+            if len(files) < 2:
+                continue
+            best_i = self._pick_original(files)
+            for i, f in enumerate(files):
+                f["is_original"] = (i == best_i)
+                f["similarity"] = None
+            result.append(files)
+        return result
 
     # ── Phash groups ──
 
@@ -252,3 +296,42 @@ class DedupEngine:
                 """, (gid, f["path"], int(f.get("is_original", False)),
                       f.get("similarity"), action))
         db.commit()
+
+    def _existing_count(self, db: CatalogDB, group_type: str) -> int:
+        return db.conn.execute(
+            "SELECT COUNT(*) FROM dedup_groups WHERE group_type = ?",
+            (group_type,),
+        ).fetchone()[0]
+
+    def find(self, db: CatalogDB, method: str = "sha256",
+             cnn_limit: int = 0) -> int:
+        total = 0
+
+        print("Finding SHA256 duplicates...")
+        prev = self._existing_count(db, "sha256")
+        groups = self.find_sha256_groups(db)
+        print(f"  Found {len(groups):,} new SHA256 groups"
+              f" ({prev:,} already stored)")
+        self.store_groups(db, groups, "sha256")
+        total += len(groups)
+
+        if method in ("phash", "cnn"):
+            print("Finding phash near-duplicates...")
+            prev = self._existing_count(db, "phash")
+            groups = self.find_phash_groups(db)
+            print(f"  Found {len(groups):,} new phash groups"
+                  f" ({prev:,} already stored)")
+            self.store_groups(db, groups, "phash")
+            total += len(groups)
+
+        if method == "cnn":
+            print("Finding CNN near-duplicates...")
+            prev = self._existing_count(db, "cnn")
+            groups = self.find_cnn_groups_all_images(db, limit=cnn_limit)
+            print(f"  Found {len(groups):,} new CNN groups"
+                  f" ({prev:,} already stored)")
+            if groups:
+                self.store_groups(db, groups, "cnn")
+                total += len(groups)
+
+        return total

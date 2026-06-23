@@ -93,7 +93,11 @@ def main():
                        help="Directory for moved duplicates (default: ~/.bubblepix/00DUPLICATES)")
     dedup_sub = dedup.add_subparsers(dest="subcommand", required=True)
 
-    find_p = dedup_sub.add_parser("find", help="Find near-duplicate groups")
+    find_p = dedup_sub.add_parser("find", help="Find duplicate groups")
+    find_p.add_argument("--method", choices=["sha256", "phash", "cnn"],
+                        default="sha256",
+                        help="Detection method: sha256 (exact), phash (altered), "
+                             "cnn (similar); each includes lower methods (default: sha256)")
     find_p.add_argument("--threshold", type=float, default=0.75,
                         help="CNN similarity threshold (default: 0.75)")
     find_p.add_argument("--limit", type=int, default=0,
@@ -170,26 +174,11 @@ def main():
         if args.subcommand == "find":
             from bubblepix.dedup import DedupEngine
             engine = DedupEngine(threshold=args.threshold, dups_dir=args.dups_dir)
-
-            total_groups = 0
-
-            print("Finding phash-based near-duplicates...")
-            phash_groups = engine.find_phash_groups(db)
-            print(f"  Found {len(phash_groups):,} phash groups")
-            engine.store_groups(db, phash_groups, "phash")
-            total_groups += len(phash_groups)
-
-            print("Finding CNN-based near-duplicates (hub clustering)...")
-            cnn_groups = engine.find_cnn_groups_all_images(db, limit=args.limit)
-            print(f"  Found {len(cnn_groups):,} CNN groups")
-            if cnn_groups:
-                engine.store_groups(db, cnn_groups, "cnn")
-                total_groups += len(cnn_groups)
-
+            total = engine.find(db, method=args.method, cnn_limit=args.limit)
             from bubblepix.dedup.engine import MODEL
             encoded = db.encoding_count(MODEL)
             print(f"  {encoded:,} images encoded")
-            print(f"Stored {total_groups:,} near-duplicate groups in catalog")
+            print(f"Stored {total:,} duplicate groups in catalog")
 
         elif args.subcommand == "review":
             cur = db.conn.execute("""
