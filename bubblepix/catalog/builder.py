@@ -14,6 +14,20 @@ from bubblepix.catalog.name_date import parse_filename_date
 
 USE_COLOR = sys.stdout.isatty()
 
+_LOG_DIR = os.path.expanduser("~/.bubblepix")
+
+
+def _worker_init():
+    """Configure logging in worker processes (forkserver/spawn don't inherit parent)."""
+    os.makedirs(_LOG_DIR, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        filename=os.path.join(_LOG_DIR, "bubblepix.log"),
+        format="[%(levelname)s] %(asctime)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        force=True,
+    )
+
 IMAGE_EXT = {".jpg", ".jpeg", ".png", ".heic", ".webp", ".bmp", ".tiff"}
 VIDEO_EXT = {".mp4", ".mov", ".m4v", ".avi", ".mts", ".3gp"}
 
@@ -135,7 +149,7 @@ class CatalogBuilder:
                     "SELECT path FROM catalog WHERE tombstone = 0"
                     " AND (phash IS NULL OR has_exif = 0)").fetchall()}
 
-            with ProcessPoolExecutor(max_workers=self.workers) as executor:
+            with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
                 futures = []
                 for fp, sr, st in paths:
                     if self.rescan:
