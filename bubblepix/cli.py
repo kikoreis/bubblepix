@@ -38,6 +38,7 @@ def main():
         format="[%(levelname)s] %(asctime)s %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
+    logging.captureWarnings(True)
     parser = argparse.ArgumentParser(prog="bubblepix")
     sub = parser.add_subparsers(dest="command", required=True)
 

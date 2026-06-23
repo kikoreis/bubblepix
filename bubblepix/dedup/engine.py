@@ -49,6 +49,15 @@ MODEL = "mobilenetv3_small"
 
 def encode_unencoded_images(db: CatalogDB, limit: int = 0,
                             model: str = MODEL) -> int:
+    import imagededup.utils.logger as _ilog
+    _orig = _ilog.return_logger
+    def _route_to_root(name):
+        log = _orig(name)
+        for h in list(log.handlers):
+            log.removeHandler(h)
+        return log
+    _ilog.return_logger = _route_to_root
+
     try:
         from imagededup.methods import CNN
     except ImportError:
