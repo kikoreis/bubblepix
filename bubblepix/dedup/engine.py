@@ -54,6 +54,8 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
     except ImportError:
         sys.exit("imagededup not installed. Run: pip install imagededup")
     from tqdm import tqdm
+    import pillow_heif
+    pillow_heif.register_heif_opener()
 
     paths = db.get_uncoded_paths(model)
     if limit > 0:
