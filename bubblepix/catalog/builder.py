@@ -116,6 +116,66 @@ class CatalogBuilder:
         self.rescan_incomplete = rescan_incomplete
         self.db = None if dry_run else CatalogDB()
 
+    def _collect_futures(self, executor, paths, existing_paths, rescan_paths):
+        futures = []
+        for fp, sr, st in paths:
+            if self.rescan:
+                pass
+            elif self.rescan_incomplete:
+                if fp in existing_paths and fp not in rescan_paths:
+                    continue
+            elif fp in existing_paths:
+                continue
+            futures.append(executor.submit(_process_file, fp, sr, st))
+        return futures
+
+    def _process_futures(self, executor, futures):
+        file_count = new_count = upd_count = skip_count = 0
+        if not futures:
+            print("  (nothing to process)")
+            return file_count, new_count, upd_count, skip_count
+        try:
+            for future in tqdm(as_completed(futures), total=len(futures),
+                               desc="Processing", unit="files", smoothing=0.05):
+                row = future.result()
+                if row is None:
+                    skip_count += 1
+                    continue
+                file_count += 1
+                if self.db.file_exists(row["path"]):
+                    upd_count += 1
+                else:
+                    new_count += 1
+                self.db.insert_file(row)
+                if file_count % 5000 == 0:
+                    self.db.commit()
+        except KeyboardInterrupt:
+            executor.shutdown(wait=False, cancel_futures=True)
+            print("\nShutting down...")
+            os._exit(130)
+        return file_count, new_count, upd_count, skip_count
+
+    def _print_summary(self, new_count, upd_count, skip_count):
+        if self.dry_run:
+            return
+        self.db.commit()
+        s = self.db.summary()
+        gb = (s["total_bytes"] or 0) / (1024**3)
+        dup_count = len(self.db.dup_groups())
+        orphan_count = len(self.db.orphan_files())
+        no_phash = s["total"] - s["hashed"]
+        print(f"\nCatalog: {ansi('1', self.db.db_path)}")
+        print(f"  {s['total']:>8,} files  ({gb:.1f} GB)")
+        print(f"  {new_count:>8,} new  {upd_count:>8,} updated")
+        if skip_count:
+            print(f"  {skip_count:>8,} skipped (missing or corrupt)")
+        if s["no_phash"]:
+            print(f"  {s['no_phash']:>8,} no phash (non-image or oversized)")
+        print(f"  {s['with_date']:>8,} with EXIF date")
+        print(f"  {orphan_count:>8,} without date (orphans)")
+        print(f"  {dup_count:>8,} duplicate groups")
+        self.db.close()
+
     def run(self):
         if not self.ingest_dirs and not self.archive_dirs:
             print("Error: at least one --ingest or --archive directory required", file=sys.stderr)
@@ -127,11 +187,6 @@ class CatalogBuilder:
         source_pairs = ([(r, "ingest") for r in self.ingest_dirs]
                         + [(r, "archive") for r in self.archive_dirs])
         walker = FileWalker(source_pairs, skip_prefixes=self.skip_prefixes)
-        file_count = 0
-        new_count = 0
-        upd_count = 0
-        skip_count = 0
-
         paths = list(walker.walk())
         if self.limit > 0:
             paths = paths[:self.limit]
@@ -139,65 +194,18 @@ class CatalogBuilder:
         print(f"Processing with {self.workers} workers...")
 
         if self.dry_run:
-            file_count = len(paths)
-        else:
-            existing_paths = {r[0] for r in self.db.conn.execute(
-                "SELECT path FROM catalog WHERE tombstone = 0").fetchall()}
-            rescan_paths = set()
-            if self.rescan_incomplete:
-                rescan_paths = {r[0] for r in self.db.conn.execute(
-                    "SELECT path FROM catalog WHERE tombstone = 0"
-                    " AND (phash IS NULL OR has_exif = 0)").fetchall()}
+            print(f"\nWould process {len(paths):,} files")
+            return
 
-            with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
-                futures = []
-                for fp, sr, st in paths:
-                    if self.rescan:
-                        pass
-                    elif self.rescan_incomplete:
-                        if fp in existing_paths and fp not in rescan_paths:
-                            continue
-                    elif fp in existing_paths:
-                        continue
-                    futures.append(executor.submit(_process_file, fp, sr, st))
-                try:
-                    for future in tqdm(as_completed(futures), total=len(futures),
-                                       desc="Processing", unit="files",
-                                       smoothing=0.05):
-                        row = future.result()
-                        if row is None:
-                            skip_count += 1
-                            continue
-                        file_count += 1
-                        if self.db.file_exists(row["path"]):
-                            upd_count += 1
-                        else:
-                            new_count += 1
-                        self.db.insert_file(row)
-                        if file_count % 5000 == 0:
-                            self.db.commit()
-                except KeyboardInterrupt:
-                    executor.shutdown(wait=False, cancel_futures=True)
-                    print("\nShutting down...")
-                    os._exit(130)
+        existing_paths = {r[0] for r in self.db.conn.execute(
+            "SELECT path FROM catalog WHERE tombstone = 0").fetchall()}
+        rescan_paths = set()
+        if self.rescan_incomplete:
+            rescan_paths = {r[0] for r in self.db.conn.execute(
+                "SELECT path FROM catalog WHERE tombstone = 0"
+                " AND (phash IS NULL OR has_exif = 0)").fetchall()}
 
-        if not self.dry_run:
-            self.db.commit()
-            s = self.db.summary()
-            gb = (s["total_bytes"] or 0) / (1024**3)
-            dup_count = len(self.db.dup_groups())
-            orphan_count = len(self.db.orphan_files())
-            no_phash = s["total"] - s["hashed"]
-            print(f"\nCatalog: {ansi('1', self.db.db_path)}")
-            print(f"  {s['total']:>8,} files  ({gb:.1f} GB)")
-            print(f"  {new_count:>8,} new  {upd_count:>8,} updated")
-            if skip_count:
-                print(f"  {skip_count:>8,} skipped (missing or corrupt)")
-            if s["no_phash"]:
-                print(f"  {s['no_phash']:>8,} no phash (non-image or oversized)")
-            print(f"  {s['with_date']:>8,} with EXIF date")
-            print(f"  {orphan_count:>8,} without date (orphans)")
-            print(f"  {dup_count:>8,} duplicate groups")
-            self.db.close()
-        else:
-            print(f"\nWould process {file_count:,} files")
+        with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
+            futures = self._collect_futures(executor, paths, existing_paths, rescan_paths)
+            _, new_count, upd_count, skip_count = self._process_futures(executor, futures)
+        self._print_summary(new_count, upd_count, skip_count)
