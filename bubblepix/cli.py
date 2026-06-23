@@ -85,9 +85,7 @@ def main():
     query_p.add_argument("--dates", action="store_true",
                          help="Show all date columns (name_date, exif_original, exif_digitized, video_creation)")
 
-    verify_p = cat_sub.add_parser("verify", help="Check for stale catalog entries")
-    verify_p.add_argument("--prune", action="store_true",
-                          help="Delete stale entries from catalog")
+    verify_p = cat_sub.add_parser("verify", help="Check for and remove stale catalog entries")
 
     # dedup commands
     dedup = sub.add_parser("dedup", help="Near-duplicate detection")
@@ -142,16 +140,9 @@ def main():
         elif args.subcommand == "verify":
             from bubblepix.catalog.db import CatalogDB
             db = CatalogDB()
-            stale = db.verify(prune=args.prune)
+            stale = db.verify(prune=True)
             if stale:
-                msg = f"{stale:,} stale entries found"
-                if args.prune:
-                    msg += " — tombstoned"
-                else:
-                    msg += " (re-run with --prune to tombstone them)"
-                print(msg)
-                if not args.prune:
-                    print("  Re-run with --prune to tombstone them")
+                print(f"{stale:,} stale entries found — tombstoned")
             else:
                 print("All catalog entries exist — no stale entries")
 
