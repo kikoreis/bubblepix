@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 import os
 from pathlib import Path
@@ -185,9 +186,13 @@ class CatalogDB:
 
     def verify(self, prune: bool = False):
         """Find stale entries (files that no longer exist)."""
+        from tqdm import tqdm
+        total = self.conn.execute(
+            "SELECT COUNT(*) FROM catalog WHERE tombstone = 0").fetchone()[0]
         stale = []
-        for (path,) in self.conn.execute(
-                "SELECT path FROM catalog WHERE tombstone = 0"):
+        for (path,) in tqdm(self.conn.execute(
+                "SELECT path FROM catalog WHERE tombstone = 0"),
+                total=total, desc="Verifying", unit="files"):
             if not os.path.exists(path):
                 stale.append(path)
         if not stale:
@@ -196,6 +201,7 @@ class CatalogDB:
             for path in stale:
                 self.conn.execute(
                     "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
+                logging.info("Tombstone: %s", path)
             self.commit()
         return len(stale)
 
