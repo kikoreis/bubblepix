@@ -60,6 +60,10 @@ def main():
                          help="Encode images for CNN-based dedup (slow on first run)")
     build_p.add_argument("--rebuild-encodings", action="store_true",
                          help="Re-encode all images from scratch")
+    build_p.add_argument("--rescan", action="store_true",
+                         help="Re-process all already-cataloged files")
+    build_p.add_argument("--rescan-incomplete", action="store_true",
+                         help="Re-process files with missing phash or EXIF")
 
 
     report_p = cat_sub.add_parser("report", help="Print catalog summary")
@@ -118,7 +122,9 @@ def main():
                                       ingest_dirs=args.ingest,
                                       archive_dirs=args.archive,
                                       limit=args.limit, workers=args.workers,
-                                      skip_prefixes=tuple(args.skip_prefix) if args.skip_prefix else None)
+                                      skip_prefixes=tuple(args.skip_prefix) if args.skip_prefix else None,
+                                      rescan=args.rescan,
+                                      rescan_incomplete=args.rescan_incomplete)
             builder.run()
             if args.encode and not args.dry_run:
                 encode_unencoded_images(db)

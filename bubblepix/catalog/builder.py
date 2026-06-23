@@ -89,13 +89,17 @@ class CatalogBuilder:
                  ingest_dirs: list[str] | None = None,
                  archive_dirs: list[str] | None = None,
                  limit: int = 0, workers: int = 0,
-                 skip_prefixes: tuple[str, ...] | None = None):
+                 skip_prefixes: tuple[str, ...] | None = None,
+                 rescan: bool = False,
+                 rescan_incomplete: bool = False):
         self.dry_run = dry_run
         self.ingest_dirs = ingest_dirs or []
         self.archive_dirs = archive_dirs or []
         self.limit = limit
         self.workers = workers if workers > 0 else (os.cpu_count() or 1)
         self.skip_prefixes = skip_prefixes
+        self.rescan = rescan
+        self.rescan_incomplete = rescan_incomplete
         self.db = None if dry_run else CatalogDB()
 
     def run(self):
@@ -123,10 +127,25 @@ class CatalogBuilder:
         if self.dry_run:
             file_count = len(paths)
         else:
+            existing_paths = {r[0] for r in self.db.conn.execute(
+                "SELECT path FROM catalog WHERE tombstone = 0").fetchall()}
+            rescan_paths = set()
+            if self.rescan_incomplete:
+                rescan_paths = {r[0] for r in self.db.conn.execute(
+                    "SELECT path FROM catalog WHERE tombstone = 0"
+                    " AND (phash IS NULL OR has_exif = 0)").fetchall()}
+
             with ProcessPoolExecutor(max_workers=self.workers) as executor:
-                futures = [executor.submit(_process_file, fp, sr, st)
-                           for fp, sr, st in paths
-                           if not self.db.file_exists(fp)]
+                futures = []
+                for fp, sr, st in paths:
+                    if self.rescan:
+                        pass
+                    elif self.rescan_incomplete:
+                        if fp in existing_paths and fp not in rescan_paths:
+                            continue
+                    elif fp in existing_paths:
+                        continue
+                    futures.append(executor.submit(_process_file, fp, sr, st))
                 for future in tqdm(as_completed(futures), total=len(futures),
                                    desc="Processing", unit="files",
                                    smoothing=0.05):
