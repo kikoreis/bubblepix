@@ -39,6 +39,7 @@ def main():
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     logging.captureWarnings(True)
+    logging.info("=== bubblepix %s ===", " ".join(sys.argv))
     parser = argparse.ArgumentParser(prog="bubblepix")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -325,6 +326,8 @@ def main_entry():
     except KeyboardInterrupt:
         print("\nShutting down...")
         sys.exit(130)
+    finally:
+        logging.info("=== end ===")
 
 if __name__ == "__main__":
     main_entry()
