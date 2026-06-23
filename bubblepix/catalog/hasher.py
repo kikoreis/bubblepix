@@ -44,7 +44,12 @@ def perceptual_hash(path: str) -> str | None:
         if w * h > MAX_PIXELS:
             scale = math.sqrt(MAX_PIXELS / (w * h))
             img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-        img = ImageOps.exif_transpose(img) or img
+        with warnings.catch_warnings(record=True) as caught2:
+            warnings.simplefilter("always")
+            img = ImageOps.exif_transpose(img) or img
+            for warning in caught2:
+                if "Corrupt EXIF data" in str(warning.message):
+                    logging.warning("Corrupt EXIF in %s", path)
         img = _ensure_rgb(img)
         h = imagehash.phash(img)
         return str(h)
