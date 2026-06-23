@@ -4,6 +4,8 @@ import warnings
 
 from PIL import Image
 from PIL.ExifTags import TAGS as EXIF_TAGS
+import pillow_heif
+pillow_heif.register_heif_opener()
 
 
 CAMERA_MAKE_OVERRIDES = {

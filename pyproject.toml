@@ -5,6 +5,7 @@ description = "Photo sorting, dedup, and family tagging tool"
 requires-python = ">=3.11"
 dependencies = [
     "Pillow>=10.0",
+    "pillow-heif>=1.0",
     "imagehash>=4.3",
     "numpy>=1.24",
     "scikit-learn>=1.3",

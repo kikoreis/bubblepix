@@ -4,6 +4,8 @@ import math
 import warnings
 from PIL import Image, ImageOps
 import imagehash
+import pillow_heif
+pillow_heif.register_heif_opener()
 
 
 MAX_MP = 50
