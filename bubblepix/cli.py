@@ -192,7 +192,12 @@ def main():
                 JOIN catalog c ON c.path = f.file_path
                 WHERE f.reviewed = 0
                 GROUP BY g.id
-                ORDER BY has_ingest DESC, move_bytes DESC
+                ORDER BY
+                  CASE g.group_type
+                    WHEN 'sha256' THEN 0 WHEN 'phash' THEN 1 WHEN 'cnn' THEN 2 ELSE 3
+                  END,
+                  has_ingest DESC,
+                  move_bytes DESC
                 LIMIT ?
             """, (args.limit,))
             rows = cur.fetchall()
@@ -208,7 +213,8 @@ def main():
             for gid, group_type, fcount, mcount, mbytes, has_ingest in rows:
                 cur2 = db.conn.execute("""
                     SELECT f.id, f.file_path, f.is_original, f.similarity,
-                           f.action, c.size
+                           f.action, c.size, c.has_exif, c.exif_date,
+                           c.exif_camera, c.exif_gps_lat
                     FROM dedup_group_files f
                     JOIN catalog c ON c.path = f.file_path
                     WHERE f.group_id = ?
@@ -218,10 +224,24 @@ def main():
                 feh_proc = None
                 save_mb = mbytes // (1024*1024)
                 print(f"\nGroup #{gid} ({group_type}, {fcount} files, {mcount} to move, ~{save_mb}MB saved)")
-                for fid, fpath, is_orig, sim, action, csize in files:
-                    tag = "KEEP" if is_orig else "MOVE"
+                file_entries = []
+                for i, (fid, fpath, is_orig, sim, action, csize,
+                        has_exif, exif_date, exif_camera, exif_gps_lat) in enumerate(files, 1):
                     cur_disk = os.path.getsize(fpath) if os.path.exists(fpath) else 0
                     size_str = f"{csize // 1024:,}KB" if csize else "0KB"
+                    meta = ""
+                    if has_exif:
+                        parts = []
+                        if exif_date:
+                            parts.append("DT")
+                        if exif_camera:
+                            cam = exif_camera.split()[0] if exif_camera else ""
+                            if cam:
+                                parts.append(cam)
+                        if exif_gps_lat is not None:
+                            parts.append("GPS")
+                        if parts:
+                            meta = " [" + "/".join(parts) + "]"
                     sim_val = None
                     if sim is not None:
                         if isinstance(sim, bytes):
@@ -230,7 +250,8 @@ def main():
                             sim_val = float(sim)
                     sim_str = f" sim={sim_val:.3f}" if sim_val is not None else ""
                     stale = " [STALE]" if cur_disk != csize else ""
-                    print(f"  [{tag}] {os.path.basename(fpath):40s}  {size_str:>10}{sim_str}{stale}  {fpath}")
+                    print(f" {i:2d}) {os.path.basename(fpath):40s}  {size_str:>10}{meta}{sim_str}{stale}  {fpath}")
+                    file_entries.append((fid, is_orig))
                 if can_gui:
                     paths = [f[1] for f in files if os.path.exists(f[1])]
                     if paths:
@@ -242,9 +263,10 @@ def main():
                         )
                 else:
                     print(f"  feh {' '.join(f[1] for f in files)}")
+                orig_nums = {i for i, (_, is_orig) in enumerate(file_entries, 1) if is_orig}
                 while True:
-                    answer = input("  Confirm (c), Override (o N,M,... keep those), Skip (s), Exit (x)? ").strip().lower()
-                    if answer in ("c", "s", "x") or answer.startswith("o"):
+                    answer = input("  Keep (numbers, comma-sep), s=skip, x=exit: ").strip().lower()
+                    if answer in ("s", "x") or (answer and all(c.isdigit() or c in " ," for c in answer)):
                         break
                 if feh_proc:
                     feh_proc.kill()
@@ -252,17 +274,14 @@ def main():
                     break
                 if answer == "s":
                     continue
-                if answer in ("c",) or answer.startswith("o"):
-                    if answer == "c":
-                        keep_ids = {f[0] for f in files if f[2]}
-                    else:
-                        try:
-                            keep_ids = {int(x.strip()) for x in answer[1:].split(",") if x.strip()}
-                        except ValueError:
-                            print("  Invalid selection, skipping group.")
-                            continue
+                try:
+                    keep_ids = {file_entries[int(n)-1][0]
+                                for n in answer.split(",") if n.strip().isdigit()}
+                except (ValueError, IndexError):
+                    print("  Invalid selection, skipping group.")
+                    continue
                     moved = 0
-                    for fid, fpath, is_orig, sim, action in files:
+                    for fid, fpath, *_ in files:
                         new_action = "keep" if fid in keep_ids else "move"
                         db.conn.execute("""
                             UPDATE dedup_group_files
