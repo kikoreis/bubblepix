@@ -215,6 +215,8 @@ def main():
                           help="Max pairs to review")
     review_p.add_argument("group_ids", nargs="*", type=int, default=None,
                           help="Specific group IDs to review")
+    review_p.add_argument("--no-feh", action="store_true",
+                          help="Disable the feh image viewer")
 
     list_p = dedup_sub.add_parser("list", help="List duplicate groups")
     list_p.add_argument("--limit", type=int, default=0,
@@ -284,7 +286,8 @@ def main():
                     print("No unreviewed groups.")
                     return
                 print(f"{len(rows)} unreviewed groups")
-            can_gui = bool(os.environ.get("DISPLAY")) and shutil.which("feh")
+            can_gui = (not args.no_feh and bool(os.environ.get("DISPLAY"))
+                       and shutil.which("feh"))
             print("  MOVE: worse score (less organized, smaller size)")
             print("  KEEP: best score (most organized, largest size)")
             if can_gui:
