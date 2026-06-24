@@ -15,13 +15,15 @@ SHA256_GROUP_SQL = """
     SELECT sha256, path, source_root, source_rel, size, source_type
     FROM catalog
     WHERE sha256 IS NOT NULL
-      AND source_root NOT LIKE ?
+      AND tombstone = 0
+      AND path NOT LIKE ?
       AND NOT EXISTS (
         SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
       AND sha256 IN (
         SELECT sha256 FROM catalog
         WHERE sha256 IS NOT NULL
-          AND source_root NOT LIKE ?
+          AND tombstone = 0
+          AND path NOT LIKE ?
           AND NOT EXISTS (
             SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
         GROUP BY sha256
@@ -34,7 +36,8 @@ PHASH_GROUP_SQL = """
     SELECT phash, path, source_root, source_rel, size, source_type
     FROM catalog
     WHERE extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
-      AND source_root NOT LIKE ?
+      AND tombstone = 0
+      AND path NOT LIKE ?
       AND phash IS NOT NULL AND phash != '0000000000000000'
       AND NOT EXISTS (
         SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
@@ -42,7 +45,8 @@ PHASH_GROUP_SQL = """
         SELECT phash FROM catalog
         WHERE phash IS NOT NULL AND phash != '0000000000000000'
           AND extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
-          AND source_root NOT LIKE ?
+          AND tombstone = 0
+          AND path NOT LIKE ?
           AND NOT EXISTS (
             SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path)
         GROUP BY phash
@@ -55,7 +59,8 @@ UNGOUPED_META_SQL = """
     SELECT path, source_root, source_rel, size, source_type
     FROM catalog
     WHERE extension IN ('.jpg', '.jpeg', '.png', '.heic', '.webp')
-      AND source_root NOT LIKE ?
+      AND tombstone = 0
+      AND path NOT LIKE ?
       AND NOT EXISTS (
         SELECT 1 FROM dedup_group_files f WHERE f.file_path = catalog.path
       )
@@ -128,13 +133,15 @@ class DedupEngine:
     # ── Helpers ──
 
     @staticmethod
+    def _stale(fp: str) -> bool:
+        return not os.path.exists(fp) or os.path.getsize(fp) == 0
+
+    @staticmethod
     def _org_score(source_type: str, source_rel: str) -> int:
         if source_type == "archive":
             return 3
         if source_type == "ingest":
-            if "/" not in source_rel.rstrip("/"):
-                return 2
-            return 1
+            return -1
         return 0
 
     @staticmethod
@@ -155,6 +162,8 @@ class DedupEngine:
         cur = db.conn.execute(SHA256_GROUP_SQL, (pattern, pattern))
         for row in cur.fetchall():
             sha256, path, root, rel, size, stype = row
+            if self._stale(path):
+                continue
             if sha256 not in groups:
                 groups[sha256] = []
             groups[sha256].append({
@@ -180,6 +189,8 @@ class DedupEngine:
         cur = db.conn.execute(PHASH_GROUP_SQL, (pattern, pattern))
         for row in cur.fetchall():
             phash, path, root, rel, size, stype = row
+            if self._stale(path):
+                continue
             if phash not in groups:
                 groups[phash] = []
             groups[phash].append({
@@ -205,6 +216,10 @@ class DedupEngine:
         if len(all_rows) < 2:
             return []
 
+        all_rows = [r for r in all_rows if not self._stale(r[0])]
+        if len(all_rows) < 2:
+            return []
+
         paths = [r[0] for r in all_rows]
         blobs = [r[1] for r in all_rows]
         matrix = np.frombuffer(b''.join(blobs), dtype=np.float32).reshape(len(blobs), -1)
@@ -214,7 +229,7 @@ class DedupEngine:
         meta = {
             r[0]: {"source_root": r[1], "source_rel": r[2],
                    "size": r[3], "source_type": r[4]}
-            for r in cur.fetchall()
+            for r in cur.fetchall() if not self._stale(r[0])
         }
 
         ungrouped_paths = [p for p in paths if p in meta]

@@ -185,13 +185,14 @@ def main():
                 SELECT g.id, g.group_type,
                        COUNT(*) as file_count,
                        SUM(CASE WHEN f.action = 'move' THEN 1 ELSE 0 END) as move_count,
-                       SUM(CASE WHEN f.action = 'move' THEN c.size ELSE 0 END) as move_bytes
+                       SUM(CASE WHEN f.action = 'move' THEN c.size ELSE 0 END) as move_bytes,
+                       MAX(CASE WHEN c.source_type = 'ingest' THEN 1 ELSE 0 END) as has_ingest
                 FROM dedup_groups g
                 JOIN dedup_group_files f ON f.group_id = g.id
                 JOIN catalog c ON c.path = f.file_path
                 WHERE f.reviewed = 0
                 GROUP BY g.id
-                ORDER BY move_bytes DESC
+                ORDER BY has_ingest DESC, move_bytes DESC
                 LIMIT ?
             """, (args.limit,))
             rows = cur.fetchall()
@@ -204,20 +205,23 @@ def main():
             print("  KEEP: best score (most organized, largest size)")
             if can_gui:
                 print("  Images open in feh (cycle with right-arrow)")
-            for gid, group_type, fcount, mcount, mbytes in rows:
+            for gid, group_type, fcount, mcount, mbytes, has_ingest in rows:
                 cur2 = db.conn.execute("""
-                    SELECT id, file_path, is_original, similarity, action
-                    FROM dedup_group_files
-                    WHERE group_id = ?
-                    ORDER BY is_original DESC, similarity DESC
+                    SELECT f.id, f.file_path, f.is_original, f.similarity,
+                           f.action, c.size
+                    FROM dedup_group_files f
+                    JOIN catalog c ON c.path = f.file_path
+                    WHERE f.group_id = ?
+                    ORDER BY f.is_original DESC, f.similarity DESC
                 """, (gid,))
                 files = cur2.fetchall()
                 feh_proc = None
                 save_mb = mbytes // (1024*1024)
                 print(f"\nGroup #{gid} ({group_type}, {fcount} files, {mcount} to move, ~{save_mb}MB saved)")
-                for fid, fpath, is_orig, sim, action in files:
+                for fid, fpath, is_orig, sim, action, csize in files:
                     tag = "KEEP" if is_orig else "MOVE"
-                    fsize = os.path.getsize(fpath) if os.path.exists(fpath) else 0
+                    cur_disk = os.path.getsize(fpath) if os.path.exists(fpath) else 0
+                    size_str = f"{csize // 1024:,}KB" if csize else "0KB"
                     sim_val = None
                     if sim is not None:
                         if isinstance(sim, bytes):
@@ -225,7 +229,8 @@ def main():
                         else:
                             sim_val = float(sim)
                     sim_str = f" sim={sim_val:.3f}" if sim_val is not None else ""
-                    print(f"  [{tag}] {os.path.basename(fpath):40s}  {fsize//1024:>8}KB{sim_str}  {fpath}")
+                    stale = " [STALE]" if cur_disk != csize else ""
+                    print(f"  [{tag}] {os.path.basename(fpath):40s}  {size_str:>10}{sim_str}{stale}  {fpath}")
                 if can_gui:
                     paths = [f[1] for f in files if os.path.exists(f[1])]
                     if paths:
