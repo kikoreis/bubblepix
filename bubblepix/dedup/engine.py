@@ -312,39 +312,39 @@ class DedupEngine:
                       f.get("similarity"), action))
         db.commit()
 
-    def _existing_count(self, db: CatalogDB, group_type: str) -> int:
-        return db.conn.execute(
-            "SELECT COUNT(*) FROM dedup_groups WHERE group_type = ?",
-            (group_type,),
-        ).fetchone()[0]
-
     def find(self, db: CatalogDB, method: str = "sha256",
              cnn_limit: int = 0) -> int:
         total = 0
 
+        db.conn.execute(
+            "DELETE FROM dedup_group_files WHERE group_id IN"
+            " (SELECT id FROM dedup_groups WHERE group_type = 'sha256')")
+        db.conn.execute("DELETE FROM dedup_groups WHERE group_type = 'sha256'")
         print("Finding SHA256 duplicates...")
-        prev = self._existing_count(db, "sha256")
         groups = self.find_sha256_groups(db)
-        print(f"  Found {len(groups):,} new SHA256 groups"
-              f" ({prev:,} already stored)")
+        print(f"  Found {len(groups):,} SHA256 groups")
         self.store_groups(db, groups, "sha256")
         total += len(groups)
 
         if method in ("phash", "cnn"):
+            db.conn.execute(
+                "DELETE FROM dedup_group_files WHERE group_id IN"
+                " (SELECT id FROM dedup_groups WHERE group_type = 'phash')")
+            db.conn.execute("DELETE FROM dedup_groups WHERE group_type = 'phash'")
             print("Finding phash near-duplicates...")
-            prev = self._existing_count(db, "phash")
             groups = self.find_phash_groups(db)
-            print(f"  Found {len(groups):,} new phash groups"
-                  f" ({prev:,} already stored)")
+            print(f"  Found {len(groups):,} phash groups")
             self.store_groups(db, groups, "phash")
             total += len(groups)
 
         if method == "cnn":
+            db.conn.execute(
+                "DELETE FROM dedup_group_files WHERE group_id IN"
+                " (SELECT id FROM dedup_groups WHERE group_type = 'cnn')")
+            db.conn.execute("DELETE FROM dedup_groups WHERE group_type = 'cnn'")
             print("Finding CNN near-duplicates...")
-            prev = self._existing_count(db, "cnn")
             groups = self.find_cnn_groups_all_images(db, limit=cnn_limit)
-            print(f"  Found {len(groups):,} new CNN groups"
-                  f" ({prev:,} already stored)")
+            print(f"  Found {len(groups):,} CNN groups")
             if groups:
                 self.store_groups(db, groups, "cnn")
                 total += len(groups)
