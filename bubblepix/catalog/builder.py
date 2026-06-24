@@ -216,18 +216,17 @@ class CatalogBuilder:
                 "SELECT path FROM catalog WHERE tombstone = 0"
                 " AND (phash IS NULL OR has_exif = 0)").fetchall()}
 
-        with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
-            futures = self._collect_futures(executor, paths, existing_paths, rescan_paths)
-            _, new_count, upd_count, skip_count, rev_count = self._process_futures(executor, futures)
         if not self.limit:
             walked = {fp for fp, _, _ in paths}
-            current = {r[0] for r in self.db.conn.execute(
-                "SELECT path FROM catalog WHERE tombstone = 0").fetchall()}
-            stale = current - walked
+            stale = existing_paths - walked
             if stale:
                 for path in stale:
                     self.db.conn.execute(
                         "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
                 self.db.commit()
                 print(f"  Tombstoned {len(stale):,} stale entries")
+
+        with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
+            futures = self._collect_futures(executor, paths, existing_paths, rescan_paths)
+            _, new_count, upd_count, skip_count, rev_count = self._process_futures(executor, futures)
         self._print_summary(new_count, upd_count, skip_count, rev_count)

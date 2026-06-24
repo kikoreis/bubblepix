@@ -181,6 +181,7 @@ class CatalogDB:
                 SUM(CASE WHEN phash IS NULL THEN 1 ELSE 0 END) as no_phash,
                 SUM(size) as total_bytes
             FROM catalog
+            WHERE tombstone = 0
         """)
         return dict(zip(["total", "with_date", "hashed", "no_phash", "total_bytes"], cur.fetchone()))
 
