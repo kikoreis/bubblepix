@@ -124,6 +124,14 @@ def encode_unencoded_images(db: CatalogDB, limit: int = 0,
     return len(paths)
 
 
+def _human_size(b: int) -> str:
+    for unit in ("KB", "MB", "GB"):
+        b /= 1024
+        if b < 1024:
+            return f"{b:.1f}{unit}"
+    return f"{b:.1f}TB"
+
+
 class DedupEngine:
     def __init__(self, threshold: float = 0.75,
                  dups_dir: str = "~/.bubblepix/00DUPLICATES"):
@@ -153,6 +161,76 @@ class DedupEngine:
             if cur > best:
                 best_i = i
         return best_i
+
+    @staticmethod
+    def list_groups(db, limit=0, filter_str=None):
+        dropbox_prefix = os.path.expanduser("~/Dropbox/")
+        cur = db.conn.execute("""
+            SELECT g.id, g.group_type, f.file_path, f.reviewed, c.size
+            FROM dedup_groups g
+            JOIN dedup_group_files f ON f.group_id = g.id
+            JOIN catalog c ON c.path = f.file_path
+            WHERE (? IS NULL OR f.file_path LIKE '%' || ? || '%')
+            ORDER BY g.id
+        """, (filter_str, filter_str))
+        prev_gid = None
+        file_count = 0
+        total_size = 0
+        reviewed_min = 1
+        dirs = set()
+        out_count = 0
+        for row in cur:
+            gid, group_type, fpath, reviewed, fsize = row
+            if gid != prev_gid:
+                if prev_gid is not None:
+                    out_count += 1
+                    r_str = "yes" if reviewed_min else "no"
+                    dirs_str = " | ".join(sorted(dirs))
+                    print(f"{prev_gid:5d}  {group_type:6s}  {file_count:3d} files"
+                          f"  {_human_size(total_size):>8}  reviewed: {r_str}  {dirs_str}")
+                    if limit and out_count >= limit:
+                        break
+                file_count = 0
+                total_size = 0
+                reviewed_min = 1
+                dirs = set()
+            prev_gid = gid
+            file_count += 1
+            total_size += (fsize or 0)
+            if not reviewed:
+                reviewed_min = 0
+            fdir = os.path.dirname(fpath)
+            if fdir.startswith(dropbox_prefix):
+                fdir = fdir[len(dropbox_prefix):]
+            dirs.add(fdir)
+        if prev_gid is not None and not (limit and out_count and out_count >= limit):
+            r_str = "yes" if reviewed_min else "no"
+            dirs_str = " | ".join(sorted(dirs))
+            print(f"{prev_gid:5d}  {group_type:6s}  {file_count:3d} files"
+                  f"  {_human_size(total_size):>8}  reviewed: {r_str}  {dirs_str}")
+
+    @staticmethod
+    def get_unreviewed_groups(db, limit=20):
+        cur = db.conn.execute("""
+            SELECT g.id, g.group_type,
+                   COUNT(*) as file_count,
+                   SUM(CASE WHEN f.action = 'move' THEN 1 ELSE 0 END) as move_count,
+                   SUM(CASE WHEN f.action = 'move' THEN c.size ELSE 0 END) as move_bytes,
+                   MAX(CASE WHEN c.source_type = 'ingest' THEN 1 ELSE 0 END) as has_ingest
+            FROM dedup_groups g
+            JOIN dedup_group_files f ON f.group_id = g.id
+            JOIN catalog c ON c.path = f.file_path
+            WHERE f.reviewed = 0
+            GROUP BY g.id
+            ORDER BY
+              CASE g.group_type
+                WHEN 'sha256' THEN 0 WHEN 'phash' THEN 1 WHEN 'cnn' THEN 2 ELSE 3
+              END,
+              has_ingest DESC,
+              move_bytes DESC
+            LIMIT ?
+        """, (limit,))
+        return cur.fetchall()
 
     # ── SHA256 groups ──
 

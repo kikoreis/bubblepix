@@ -134,6 +134,8 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
     return True
 
 
+
+
 def main():
     _ensure_process_group()
     log_dir = os.path.expanduser("~/.bubblepix")
@@ -212,9 +214,11 @@ def main():
     review_p.add_argument("--limit", type=int, default=20,
                           help="Max pairs to review")
 
-    resolve_p = dedup_sub.add_parser("resolve", help="Move resolved duplicates to dups-dir")
-    resolve_p.add_argument("--dry-run", action="store_true",
-                           help="Show what would be moved")
+    list_p = dedup_sub.add_parser("list", help="List duplicate groups")
+    list_p.add_argument("--limit", type=int, default=0,
+                        help="Max groups to show (0 = unlimited)")
+    list_p.add_argument("filter", nargs="?", default=None,
+                        help="Only show groups with files matching this text")
 
     args = parser.parse_args()
 
@@ -265,26 +269,8 @@ def main():
             print(f"Stored {total:,} duplicate groups in catalog")
 
         elif args.subcommand == "review":
-            cur = db.conn.execute("""
-                SELECT g.id, g.group_type,
-                       COUNT(*) as file_count,
-                       SUM(CASE WHEN f.action = 'move' THEN 1 ELSE 0 END) as move_count,
-                       SUM(CASE WHEN f.action = 'move' THEN c.size ELSE 0 END) as move_bytes,
-                       MAX(CASE WHEN c.source_type = 'ingest' THEN 1 ELSE 0 END) as has_ingest
-                FROM dedup_groups g
-                JOIN dedup_group_files f ON f.group_id = g.id
-                JOIN catalog c ON c.path = f.file_path
-                WHERE f.reviewed = 0
-                GROUP BY g.id
-                ORDER BY
-                  CASE g.group_type
-                    WHEN 'sha256' THEN 0 WHEN 'phash' THEN 1 WHEN 'cnn' THEN 2 ELSE 3
-                  END,
-                  has_ingest DESC,
-                  move_bytes DESC
-                LIMIT ?
-            """, (args.limit,))
-            rows = cur.fetchall()
+            from bubblepix.dedup import DedupEngine
+            rows = DedupEngine.get_unreviewed_groups(db, args.limit)
             if not rows:
                 print("No unreviewed groups.")
                 return
@@ -299,33 +285,9 @@ def main():
                                      has_ingest, dups_dir, can_gui):
                     break
 
-        elif args.subcommand == "resolve":
-            cur = db.conn.execute("""
-                SELECT f.id, f.file_path
-                FROM dedup_group_files f
-                JOIN dedup_groups g ON g.id = f.group_id
-                WHERE f.action = 'move'
-                  AND f.reviewed = 1
-            """)
-            move_files = cur.fetchall()
-            if not move_files:
-                print("No resolved duplicates to move.")
-                return
-            if args.dry_run:
-                print(f"Would move {len(move_files):,} files to {dups_dir}:")
-                for fid, fpath in move_files:
-                    print(f"  {fpath}")
-                return
-            moved = 0
-            for fid, fpath in move_files:
-                if _move_file(db, dups_dir, fpath):
-                    moved += 1
-                    db.conn.execute(
-                        "UPDATE dedup_group_files SET action='moved' WHERE id=?",
-                        (fid,),
-                    )
-            db.commit()
-            print(f"Moved {moved} file(s) to {dups_dir}.")
+        elif args.subcommand == "list":
+            from bubblepix.dedup import DedupEngine
+            DedupEngine.list_groups(db, args.limit, args.filter)
 
 def main_entry():
     try:
