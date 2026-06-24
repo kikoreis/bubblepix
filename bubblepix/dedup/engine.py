@@ -232,6 +232,26 @@ class DedupEngine:
         """, (limit,))
         return cur.fetchall()
 
+    @staticmethod
+    def get_groups_by_ids(db, group_ids: list[int]):
+        if not group_ids:
+            return []
+        placeholders = ",".join("?" for _ in group_ids)
+        cur = db.conn.execute(f"""
+            SELECT g.id, g.group_type,
+                   COUNT(*) as file_count,
+                   SUM(CASE WHEN f.action = 'move' THEN 1 ELSE 0 END) as move_count,
+                   SUM(CASE WHEN f.action = 'move' THEN c.size ELSE 0 END) as move_bytes,
+                   MAX(CASE WHEN c.source_type = 'ingest' THEN 1 ELSE 0 END) as has_ingest
+            FROM dedup_groups g
+            JOIN dedup_group_files f ON f.group_id = g.id
+            JOIN catalog c ON c.path = f.file_path
+            WHERE g.id IN ({placeholders})
+            GROUP BY g.id
+            ORDER BY g.id
+        """, group_ids)
+        return cur.fetchall()
+
     # ── SHA256 groups ──
 
     def find_sha256_groups(self, db: CatalogDB) -> list[list[dict]]:

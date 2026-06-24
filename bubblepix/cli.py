@@ -213,6 +213,8 @@ def main():
     review_p = dedup_sub.add_parser("review", help="Review found pairs interactively")
     review_p.add_argument("--limit", type=int, default=20,
                           help="Max pairs to review")
+    review_p.add_argument("group_ids", nargs="*", type=int, default=None,
+                          help="Specific group IDs to review")
 
     list_p = dedup_sub.add_parser("list", help="List duplicate groups")
     list_p.add_argument("--limit", type=int, default=0,
@@ -270,12 +272,19 @@ def main():
 
         elif args.subcommand == "review":
             from bubblepix.dedup import DedupEngine
-            rows = DedupEngine.get_unreviewed_groups(db, args.limit)
-            if not rows:
-                print("No unreviewed groups.")
-                return
+            if args.group_ids:
+                rows = DedupEngine.get_groups_by_ids(db, args.group_ids)
+                if not rows:
+                    print("No groups found for the given IDs.")
+                    return
+                print(f"Reviewing {len(rows)} specified group(s)")
+            else:
+                rows = DedupEngine.get_unreviewed_groups(db, args.limit)
+                if not rows:
+                    print("No unreviewed groups.")
+                    return
+                print(f"{len(rows)} unreviewed groups")
             can_gui = bool(os.environ.get("DISPLAY")) and shutil.which("feh")
-            print(f"{len(rows)} unreviewed groups")
             print("  MOVE: worse score (less organized, smaller size)")
             print("  KEEP: best score (most organized, largest size)")
             if can_gui:
