@@ -94,7 +94,14 @@ def _process_file(filepath: str, source_root: str, source_type: str) -> dict | N
     row["exif_width"] = exif.get("width")
     row["exif_height"] = exif.get("height")
     row["exif_orientation"] = exif.get("orientation")
-    row["has_exif"] = 1 if exif.get("has_exif") else 0
+    row["has_exif"] = 1 if any((
+        row["exif_date"], row["exif_original_date"],
+        row["exif_digitized_date"], row["exif_modify_date"],
+        row["video_creation_date"],
+        row["exif_camera"],
+        row["exif_gps_lat"] is not None,
+        row["exif_gps_lon"] is not None,
+    )) else 0
     return row
 
 
@@ -130,10 +137,10 @@ class CatalogBuilder:
         return futures
 
     def _process_futures(self, executor, futures):
-        file_count = new_count = upd_count = skip_count = 0
+        file_count = new_count = upd_count = rev_count = skip_count = 0
         if not futures:
             print("  (nothing to process)")
-            return file_count, new_count, upd_count, skip_count
+            return file_count, new_count, upd_count, skip_count, rev_count
         try:
             for future in tqdm(as_completed(futures), total=len(futures),
                                desc="Processing", unit="files", smoothing=0.05):
@@ -144,18 +151,21 @@ class CatalogBuilder:
                 file_count += 1
                 if self.db.file_exists(row["path"]):
                     upd_count += 1
+                    self.db.insert_file(row)
+                elif self.db.revive_by_sha256(row):
+                    rev_count += 1
                 else:
                     new_count += 1
-                self.db.insert_file(row)
+                    self.db.insert_file(row)
                 if file_count % 5000 == 0:
                     self.db.commit()
         except KeyboardInterrupt:
             executor.shutdown(wait=False, cancel_futures=True)
             print("\nShutting down...")
             os._exit(130)
-        return file_count, new_count, upd_count, skip_count
+        return file_count, new_count, upd_count, skip_count, rev_count
 
-    def _print_summary(self, new_count, upd_count, skip_count):
+    def _print_summary(self, new_count, upd_count, skip_count, rev_count):
         if self.dry_run:
             return
         self.db.commit()
@@ -166,7 +176,8 @@ class CatalogBuilder:
         no_phash = s["total"] - s["hashed"]
         print(f"\nCatalog: {ansi('1', self.db.db_path)}")
         print(f"  {s['total']:>8,} files  ({gb:.1f} GB)")
-        print(f"  {new_count:>8,} new  {upd_count:>8,} updated")
+        print(f"  {new_count:>8,} new  {rev_count:>8,} revived"
+              f"  {upd_count:>8,} unchanged")
         if skip_count:
             print(f"  {skip_count:>8,} skipped (missing or corrupt)")
         if s["no_phash"]:
@@ -207,5 +218,16 @@ class CatalogBuilder:
 
         with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
             futures = self._collect_futures(executor, paths, existing_paths, rescan_paths)
-            _, new_count, upd_count, skip_count = self._process_futures(executor, futures)
-        self._print_summary(new_count, upd_count, skip_count)
+            _, new_count, upd_count, skip_count, rev_count = self._process_futures(executor, futures)
+        if not self.limit:
+            walked = {fp for fp, _, _ in paths}
+            current = {r[0] for r in self.db.conn.execute(
+                "SELECT path FROM catalog WHERE tombstone = 0").fetchall()}
+            stale = current - walked
+            if stale:
+                for path in stale:
+                    self.db.conn.execute(
+                        "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
+                self.db.commit()
+                print(f"  Tombstoned {len(stale):,} stale entries")
+        self._print_summary(new_count, upd_count, skip_count, rev_count)

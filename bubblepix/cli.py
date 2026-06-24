@@ -85,7 +85,6 @@ def main():
     query_p.add_argument("--dates", action="store_true",
                          help="Show all date columns (name_date, exif_original, exif_digitized, video_creation)")
 
-    verify_p = cat_sub.add_parser("verify", help="Check for and remove stale catalog entries")
 
     # dedup commands
     dedup = sub.add_parser("dedup", help="Near-duplicate detection")
@@ -141,14 +140,8 @@ def main():
             CatalogQuery(limit=args.limit, where=args.where,
                          order=args.order, fmt=args.format,
                          show_dates=args.dates).run()
-        elif args.subcommand == "verify":
-            from bubblepix.catalog.db import CatalogDB
-            db = CatalogDB()
-            stale = db.verify(prune=True)
-            if stale:
-                print(f"{stale:,} stale entries found — tombstoned")
-            else:
-                print("All catalog entries exist — no stale entries")
+        else:
+            print("Unrecognized catalog subcommand")
 
     elif args.command == "dedup":
         from bubblepix.catalog.db import CatalogDB

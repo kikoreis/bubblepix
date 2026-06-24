@@ -124,6 +124,25 @@ class CatalogDB:
                  :source_root, :source_rel, :source_type)
         """, row)
 
+    def revive_by_sha256(self, row: dict) -> str | None:
+        cur = self.conn.execute(
+            "SELECT id, path FROM catalog WHERE sha256 = ? AND tombstone = 1"
+            " LIMIT 1",
+            (row["sha256"],),
+        )
+        hit = cur.fetchone()
+        if not hit:
+            return None
+        old_id, old_path = hit
+        self.conn.execute("""
+            UPDATE catalog SET
+                path=:path, filename=:filename, extension=:extension,
+                size=:size, mtime=:mtime, tombstone=0, source_root=:source_root,
+                source_rel=:source_rel, source_type=:source_type
+            WHERE id=:id
+        """, row | {"id": old_id})
+        return old_path
+
     def commit(self):
         self.conn.commit()
 
@@ -183,27 +202,6 @@ class CatalogDB:
 
     def close(self):
         self.conn.close()
-
-    def verify(self, prune: bool = False):
-        """Find stale entries (files that no longer exist)."""
-        from tqdm import tqdm
-        total = self.conn.execute(
-            "SELECT COUNT(*) FROM catalog WHERE tombstone = 0").fetchone()[0]
-        stale = []
-        for (path,) in tqdm(self.conn.execute(
-                "SELECT path FROM catalog WHERE tombstone = 0"),
-                total=total, desc="Verifying", unit="files"):
-            if not os.path.exists(path):
-                stale.append(path)
-        if not stale:
-            return 0
-        if prune:
-            for path in stale:
-                self.conn.execute(
-                    "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
-                logging.info("Tombstone: %s", path)
-            self.commit()
-        return len(stale)
 
     # ── Encodings ──
 
