@@ -170,9 +170,10 @@ class DedupEngine:
             FROM dedup_groups g
             JOIN dedup_group_files f ON f.group_id = g.id
             JOIN catalog c ON c.path = f.file_path
-            WHERE (? IS NULL OR f.file_path LIKE '%' || ? || '%')
-            ORDER BY g.id
-        """, (filter_str, filter_str))
+             WHERE (? IS NULL OR f.file_path LIKE '%' || ? || '%'
+                    OR c.exif_camera LIKE '%' || ? || '%')
+             ORDER BY g.id
+         """, (filter_str, filter_str, filter_str))
         prev_gid = None
         file_count = 0
         total_size = 0
@@ -210,7 +211,7 @@ class DedupEngine:
                   f"  {_human_size(total_size):>8}  reviewed: {r_str}  {dirs_str}")
 
     @staticmethod
-    def get_unreviewed_groups(db, limit=20):
+    def get_unreviewed_groups(db, limit=20, filter_str=None):
         cur = db.conn.execute("""
             SELECT g.id, g.group_type,
                    COUNT(*) as file_count,
@@ -222,6 +223,10 @@ class DedupEngine:
             JOIN catalog c ON c.path = f.file_path
             WHERE f.reviewed = 0
             GROUP BY g.id
+            HAVING (? IS NULL OR
+              SUM(CASE WHEN f.file_path LIKE '%' || ? || '%'
+                        OR COALESCE(c.exif_camera, '') LIKE '%' || ? || '%'
+                       THEN 1 ELSE 0 END) > 0)
             ORDER BY
               CASE g.group_type
                 WHEN 'sha256' THEN 0 WHEN 'phash' THEN 1 WHEN 'cnn' THEN 2 ELSE 3
@@ -229,7 +234,7 @@ class DedupEngine:
               has_ingest DESC,
               move_bytes DESC
             LIMIT ?
-        """, (limit,))
+        """, (filter_str, filter_str, filter_str, limit))
         return cur.fetchall()
 
     @staticmethod

@@ -47,7 +47,7 @@ def _move_file(db, dups_dir, fpath: str):
 
 
 def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
-                   dups_dir, can_gui) -> bool:
+                   dups_dir, can_gui, group_count):
     cur = db.conn.execute("""
         SELECT f.id, f.file_path, f.is_original, f.similarity,
                f.action, c.size, c.has_exif, c.exif_date,
@@ -62,8 +62,9 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
     save_mb = mbytes // (1024*1024)
     print(f"\nGroup #{gid} ({group_type}, {fcount} files, {mcount} to move, ~{save_mb}MB saved)")
     file_entries = []
+    labels = [chr(ord('a') + i) for i in range(len(files))]
     for i, (fid, fpath, is_orig, sim, action, csize,
-            has_exif, exif_date, exif_camera, exif_gps_lat) in enumerate(files, 1):
+            has_exif, exif_date, exif_camera, exif_gps_lat) in enumerate(files):
         cur_disk = os.path.getsize(fpath) if os.path.exists(fpath) else 0
         size_str = f"{csize // 1024:,}KB" if csize else "0KB"
         meta = ""
@@ -87,7 +88,7 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
                 sim_val = float(sim)
         sim_str = f" sim={sim_val:.3f}" if sim_val is not None else ""
         stale = " [STALE]" if cur_disk != csize else ""
-        print(f" {i:2d}) {os.path.basename(fpath):40s}  {size_str:>10}{meta}{sim_str}{stale}  {fpath}")
+        print(f" {labels[i]:>2s}) {os.path.basename(fpath):40s}  {size_str:>10}{meta}{sim_str}{stale}  {fpath}")
         file_entries.append((fid, is_orig))
     if can_gui:
         paths = [f[1] for f in files if os.path.exists(f[1])]
@@ -101,21 +102,27 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
     else:
         print(f"  feh {' '.join(f[1] for f in files)}")
     while True:
-        answer = input("  Keep (numbers, comma-sep), s=skip, x=exit: ").strip().lower()
-        if answer in ("s", "x") or (answer and all(c.isdigit() or c in " ," for c in answer)):
+        answer = input("  Keep letters, n=jump to group, s=skip, x=exit: ").strip().lower()
+        if answer in ("s", "x"):
             break
+        if answer.isdigit():
+            n = int(answer)
+            if 1 <= n <= group_count:
+                break
+        if answer and all(c.isalpha() and 'a' <= c <= 'z' for c in answer.replace(",", "").replace(" ", "")):
+            tokens = [t.strip() for t in answer.replace(",", " ").split()]
+            if all(t in labels for t in tokens):
+                break
     if feh_proc:
         feh_proc.kill()
     if answer == "x":
         return False
     if answer == "s":
-        return True
-    try:
-        keep_ids = {file_entries[int(n)-1][0]
-                    for n in answer.split(",") if n.strip().isdigit()}
-    except (ValueError, IndexError):
-        print("  Invalid selection, skipping group.")
-        return True
+        return None
+    if answer.isdigit():
+        return int(answer)
+    tokens = [t.strip() for t in answer.replace(",", " ").split()]
+    keep_ids = {file_entries[labels.index(t)][0] for t in tokens}
     moved = 0
     for fid, fpath, *_ in files:
         new_action = "keep" if fid in keep_ids else "move"
@@ -131,7 +138,7 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
             """, (fid,))
     db.commit()
     print(f"  Moved {moved} file(s) to {dups_dir}")
-    return True
+    return None
 
 
 
@@ -217,6 +224,8 @@ def main():
                           help="Specific group IDs to review")
     review_p.add_argument("--no-feh", action="store_true",
                           help="Disable the feh image viewer")
+    review_p.add_argument("--filter", type=str, default=None,
+                          help="Only review groups with files matching text in path or camera model")
 
     list_p = dedup_sub.add_parser("list", help="List duplicate groups")
     list_p.add_argument("--limit", type=int, default=0,
@@ -281,7 +290,7 @@ def main():
                     return
                 print(f"Reviewing {len(rows)} specified group(s)")
             else:
-                rows = DedupEngine.get_unreviewed_groups(db, args.limit)
+                rows = DedupEngine.get_unreviewed_groups(db, args.limit, args.filter)
                 if not rows:
                     print("No unreviewed groups.")
                     return
@@ -292,10 +301,17 @@ def main():
             print("  KEEP: best score (most organized, largest size)")
             if can_gui:
                 print("  Images open in feh (cycle with right-arrow)")
-            for gid, group_type, fcount, mcount, mbytes, has_ingest in rows:
-                if not _review_group(db, gid, group_type, fcount, mcount, mbytes,
-                                     has_ingest, dups_dir, can_gui):
+            i = 0
+            while i < len(rows):
+                gid, group_type, fcount, mcount, mbytes, has_ingest = rows[i]
+                result = _review_group(db, gid, group_type, fcount, mcount, mbytes,
+                                       has_ingest, dups_dir, can_gui, len(rows))
+                if result is False:
                     break
+                if isinstance(result, int):
+                    i = result - 1
+                else:
+                    i += 1
 
         elif args.subcommand == "list":
             from bubblepix.dedup import DedupEngine
