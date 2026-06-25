@@ -46,6 +46,21 @@ def _move_file(db, dups_dir, fpath: str):
     return True
 
 
+def _format_meta(has_exif, exif_date, exif_camera, exif_gps_lat):
+    if not has_exif:
+        return ""
+    parts = []
+    if exif_date:
+        parts.append("DT")
+    if exif_camera:
+        cam = exif_camera.split()[0] if exif_camera else ""
+        if cam:
+            parts.append(cam)
+    if exif_gps_lat is not None:
+        parts.append("GPS")
+    return " [" + "/".join(parts) + "]" if parts else ""
+
+
 def _parse_review_answer(answer: str, labels: list[str]
                          ) -> tuple[set[str], list[tuple[str, str]]] | None:
     try:
@@ -83,6 +98,90 @@ def _parse_review_answer(answer: str, labels: list[str]
         return None
 
 
+def _auto_score(has_exif, exif_date, exif_camera,
+                exif_gps_lat, exif_gps_lon, exif_orientation, size):
+    exif = 0
+    if exif_date:
+        exif += 100
+    if exif_camera:
+        exif += 50
+    if exif_gps_lat is not None or exif_gps_lon is not None:
+        exif += 30
+    if exif_orientation is not None and exif_orientation in (1, 6, 8):
+        exif += 10
+    return (exif, size or 0)
+
+
+def _auto_review_group(db, gid, group_type, fcount, mcount, mbytes,
+                       has_ingest, dups_dir, dry_run=False):
+    cur = db.conn.execute("""
+        SELECT f.id, f.file_path, c.size, c.has_exif, c.exif_date,
+               c.exif_camera, c.exif_gps_lat, c.exif_gps_lon,
+               c.exif_orientation
+        FROM dedup_group_files f
+        JOIN catalog c ON c.path = f.file_path
+        WHERE f.group_id = ? AND c.tombstone = 0
+    """, (gid,))
+    files = cur.fetchall()
+    if not files:
+        return
+
+    candidate = None
+    for row in files:
+        fid, fpath, size, has_exif, exif_date, exif_camera, \
+            exif_gps_lat, exif_gps_lon, exif_orientation = row
+        if not os.path.exists(fpath):
+            print(f"  [AUTO] {os.path.basename(fpath)}: not on disk, skipping")
+            continue
+        score = _auto_score(has_exif, exif_date, exif_camera,
+                            exif_gps_lat, exif_gps_lon,
+                            exif_orientation, size)
+        if candidate is None or score > candidate[0]:
+            candidate = (score, fid, fpath, size)
+
+    if candidate is None:
+        print(f"  [AUTO] Group #{gid}: all files missing, skipping")
+        return
+
+    winner_fid, winner_size = candidate[1], candidate[3]
+    labels = [chr(ord('a') + i) for i in range(len(files))]
+    winner_idx = next(i for i, f in enumerate(files) if f[0] == winner_fid)
+    winner_label = labels[winner_idx]
+    save_mb = mbytes // (1024 * 1024)
+    print(f"  [AUTO] Group #{gid} ({group_type}, {fcount} files,"
+          f" ~{save_mb}MB saved)"
+          f" → kept {winner_label} ({winner_size} bytes, exif={candidate[0][0]})")
+
+    for row in files:
+        fid, fpath, size, has_exif, exif_date, exif_camera, \
+            exif_gps_lat, exif_gps_lon, exif_orientation = row
+        is_winner = fid == winner_fid
+        size_str = f"{size // 1024:,}KB" if size else "0KB"
+        meta = _format_meta(has_exif, exif_date, exif_camera, exif_gps_lat)
+        tag = "keep" if is_winner else "move"
+        print(f"         {tag}: {os.path.basename(fpath):40s}  {size_str:>10}{meta}  {fpath}")
+
+    if dry_run:
+        return
+
+    moved = 0
+    for fid, fpath, *_ in files:
+        if fid == winner_fid:
+            db.conn.execute(
+                "UPDATE dedup_group_files SET action='keep',"
+                " reviewed=1 WHERE id=?", (fid,))
+        elif _move_file(db, dups_dir, fpath):
+            moved += 1
+            db.conn.execute(
+                "UPDATE dedup_group_files SET action='moved',"
+                " reviewed=1 WHERE id=?", (fid,))
+        else:
+            db.conn.execute(
+                "UPDATE dedup_group_files SET action='skip',"
+                " reviewed=1 WHERE id=?", (fid,))
+    db.commit()
+
+
 def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
                    dups_dir, can_gui, group_count):
     cur = db.conn.execute("""
@@ -104,19 +203,7 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
             has_exif, exif_date, exif_camera, exif_gps_lat) in enumerate(files):
         cur_disk = os.path.getsize(fpath) if os.path.exists(fpath) else 0
         size_str = f"{csize // 1024:,}KB" if csize else "0KB"
-        meta = ""
-        if has_exif:
-            parts = []
-            if exif_date:
-                parts.append("DT")
-            if exif_camera:
-                cam = exif_camera.split()[0] if exif_camera else ""
-                if cam:
-                    parts.append(cam)
-            if exif_gps_lat is not None:
-                parts.append("GPS")
-            if parts:
-                meta = " [" + "/".join(parts) + "]"
+        meta = _format_meta(has_exif, exif_date, exif_camera, exif_gps_lat)
         sim_val = None
         if sim is not None:
             if isinstance(sim, bytes):
@@ -309,6 +396,10 @@ def main():
     review_p.add_argument("--method", type=str, default=None,
                           choices=["sha256", "phash", "cnn"],
                           help="Only review groups of this type")
+    review_p.add_argument("--auto", action="store_true",
+                          help="Auto-resolve groups without prompting")
+    review_p.add_argument("--dry-run", action="store_true",
+                          help="For --auto: show what would be done without making changes")
 
     list_p = dedup_sub.add_parser("list", help="List duplicate groups")
     list_p.add_argument("--limit", type=int, default=0,
@@ -378,6 +469,10 @@ def main():
                     print("No unreviewed groups.")
                     return
                 print(f"{len(rows)} unreviewed groups")
+            if args.auto:
+                for row in rows:
+                    _auto_review_group(db, *row, dups_dir, args.dry_run)
+                return
             can_gui = (not args.no_feh and bool(os.environ.get("DISPLAY"))
                        and shutil.which("feh"))
             print("  MOVE: worse score (less organized, smaller size)")
