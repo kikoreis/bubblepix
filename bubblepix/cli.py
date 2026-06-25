@@ -46,6 +46,43 @@ def _move_file(db, dups_dir, fpath: str):
     return True
 
 
+def _parse_review_answer(answer: str, labels: list[str]
+                         ) -> tuple[set[str], list[tuple[str, str]]] | None:
+    try:
+        raw_tokens = [t.strip() for t in answer.replace(",", " ").split() if t.strip()]
+        if not raw_tokens:
+            return None
+        keeps: set[str] = set()
+        replaces: list[tuple[str, str]] = []
+        for tok in raw_tokens:
+            if "<" in tok:
+                parts = tok.split("<")
+                if len(parts) != 2:
+                    return None
+                victim, winner = parts[0], parts[1]
+            elif ">" in tok:
+                parts = tok.split(">")
+                if len(parts) != 2:
+                    return None
+                winner, victim = parts[0], parts[1]
+            else:
+                keeps.add(tok)
+                continue
+            if len(victim) != 1 or len(winner) != 1:
+                return None
+            if not victim.isalpha() or not winner.isalpha():
+                return None
+            replaces.append((victim, winner))
+        all_mentioned = keeps | {v for v, _ in replaces} | {w for _, w in replaces}
+        if not all(c in labels for c in all_mentioned):
+            return None
+        if len(all_mentioned) != len(keeps) + 2 * len(replaces):
+            return None
+        return (keeps, replaces)
+    except (ValueError, IndexError):
+        return None
+
+
 def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
                    dups_dir, can_gui, group_count):
     cur = db.conn.execute("""
@@ -102,17 +139,15 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
     else:
         print(f"  feh {' '.join(f[1] for f in files)}")
     while True:
-        answer = input("  Keep letters, n=jump to group, s=skip, x=exit: ").strip().lower()
+        answer = input("  Keep/replace (e.g. a<b), n=jump, s=skip, x=exit: ").strip().lower()
         if answer in ("s", "x"):
             break
         if answer.isdigit():
             n = int(answer)
             if 1 <= n <= group_count:
                 break
-        if answer and all(c.isalpha() and 'a' <= c <= 'z' for c in answer.replace(",", "").replace(" ", "")):
-            tokens = [t.strip() for t in answer.replace(",", " ").split()]
-            if all(t in labels for t in tokens):
-                break
+        if _parse_review_answer(answer, labels) is not None:
+            break
     if feh_proc:
         feh_proc.kill()
     if answer == "x":
@@ -121,23 +156,68 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
         return None
     if answer.isdigit():
         return int(answer)
-    tokens = [t.strip() for t in answer.replace(",", " ").split()]
-    keep_ids = {file_entries[labels.index(t)][0] for t in tokens}
+    keeps, replaces = _parse_review_answer(answer, labels)
+
     moved = 0
-    for fid, fpath, *_ in files:
-        new_action = "keep" if fid in keep_ids else "move"
-        db.conn.execute("""
-            UPDATE dedup_group_files
-            SET action=?, reviewed=1 WHERE id=?
-        """, (new_action, fid))
-        if new_action == "move" and _move_file(db, dups_dir, fpath):
+    replaced = 0
+
+    # Phase 1: replaces — move winner to victim's path
+    handles = set()
+    for victim_label, winner_label in replaces:
+        vi = labels.index(victim_label)
+        wi = labels.index(winner_label)
+        v_fid, v_path, *_ = files[vi]
+        w_fid, w_path, *_ = files[wi]
+        handles.update([victim_label, winner_label])
+
+        if not os.path.exists(w_path):
+            print(f"  [SKIP] winner not found: {w_path}")
+            db.conn.execute(
+                "UPDATE dedup_group_files SET action='skip', reviewed=1 WHERE id=?",
+                (w_fid,))
+            continue
+
+        # Move victim out of the way
+        _move_file(db, dups_dir, v_path)
+        db.conn.execute(
+            "UPDATE dedup_group_files SET action='moved', reviewed=1 WHERE id=?",
+            (v_fid,))
+
+        # Move winner to victim's old path
+        shutil.move(w_path, v_path)
+        db.conn.execute(
+            "UPDATE catalog SET path = ? WHERE path = ?",
+            (v_path, w_path))
+        db.conn.execute(
+            "UPDATE dedup_group_files SET file_path = ?, action='keep', reviewed=1 WHERE id=?",
+            (v_path, w_fid))
+        replaced += 1
+        print(f"  [REPLACE] {os.path.basename(w_path)} → {v_path}")
+
+    # Phase 2: plain keeps
+    for keep_label in keeps:
+        handles.add(keep_label)
+        ki = labels.index(keep_label)
+        k_fid = files[ki][0]
+        db.conn.execute(
+            "UPDATE dedup_group_files SET action='keep', reviewed=1 WHERE id=?",
+            (k_fid,))
+
+    # Phase 3: everything else → dups
+    for i, (fid, fpath, *_) in enumerate(files):
+        if labels[i] in handles:
+            continue
+        if _move_file(db, dups_dir, fpath):
             moved += 1
-            db.conn.execute("""
-                UPDATE dedup_group_files
-                SET action='moved' WHERE id=?
-            """, (fid,))
+            db.conn.execute(
+                "UPDATE dedup_group_files SET action='moved', reviewed=1 WHERE id=?",
+                (fid,))
+
     db.commit()
-    print(f"  Moved {moved} file(s) to {dups_dir}")
+    if replaced:
+        print(f"  Replaced {replaced}, moved {moved} file(s) to {dups_dir}")
+    else:
+        print(f"  Moved {moved} file(s) to {dups_dir}")
     return None
 
 
