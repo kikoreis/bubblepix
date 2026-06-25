@@ -306,6 +306,9 @@ def main():
                           help="Disable the feh image viewer")
     review_p.add_argument("--filter", type=str, default=None,
                           help="Only review groups with files matching text in path or camera model")
+    review_p.add_argument("--method", type=str, default=None,
+                          choices=["sha256", "phash", "cnn"],
+                          help="Only review groups of this type")
 
     list_p = dedup_sub.add_parser("list", help="List duplicate groups")
     list_p.add_argument("--limit", type=int, default=0,
@@ -370,7 +373,7 @@ def main():
                     return
                 print(f"Reviewing {len(rows)} specified group(s)")
             else:
-                rows = DedupEngine.get_unreviewed_groups(db, args.limit, args.filter)
+                rows = DedupEngine.get_unreviewed_groups(db, args.limit, args.filter, args.method)
                 if not rows:
                     print("No unreviewed groups.")
                     return

@@ -218,7 +218,7 @@ class DedupEngine:
                   f"  {_human_size(total_size):>8}  reviewed: {r_str}  {dirs_str}")
 
     @staticmethod
-    def get_unreviewed_groups(db, limit=20, filter_str=None):
+    def get_unreviewed_groups(db, limit=20, filter_str=None, method=None):
         cur = db.conn.execute("""
             SELECT g.id, g.group_type,
                    COUNT(*) as file_count,
@@ -229,6 +229,7 @@ class DedupEngine:
             JOIN dedup_group_files f ON f.group_id = g.id
             JOIN catalog c ON c.path = f.file_path
             WHERE f.reviewed = 0 AND c.tombstone = 0
+              AND (? IS NULL OR g.group_type = ?)
             GROUP BY g.id
             HAVING COUNT(*) > 1
               AND (? IS NULL OR
@@ -242,7 +243,7 @@ class DedupEngine:
               has_ingest DESC,
               move_bytes DESC
             LIMIT ?
-        """, (filter_str, filter_str, filter_str, limit))
+        """, (method, method, filter_str, filter_str, filter_str, limit))
         return cur.fetchall()
 
     @staticmethod
