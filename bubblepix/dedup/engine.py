@@ -170,7 +170,14 @@ class DedupEngine:
             FROM dedup_groups g
             JOIN dedup_group_files f ON f.group_id = g.id
             JOIN catalog c ON c.path = f.file_path
-             WHERE (? IS NULL OR f.file_path LIKE '%' || ? || '%'
+            WHERE c.tombstone = 0
+              AND g.id IN (
+                SELECT group_id FROM dedup_group_files
+                JOIN catalog ON catalog.path = dedup_group_files.file_path
+                WHERE catalog.tombstone = 0
+                GROUP BY group_id HAVING COUNT(*) > 1
+              )
+              AND (? IS NULL OR f.file_path LIKE '%' || ? || '%'
                     OR c.exif_camera LIKE '%' || ? || '%')
              ORDER BY g.id
          """, (filter_str, filter_str, filter_str))
@@ -221,9 +228,10 @@ class DedupEngine:
             FROM dedup_groups g
             JOIN dedup_group_files f ON f.group_id = g.id
             JOIN catalog c ON c.path = f.file_path
-            WHERE f.reviewed = 0
+            WHERE f.reviewed = 0 AND c.tombstone = 0
             GROUP BY g.id
-            HAVING (? IS NULL OR
+            HAVING COUNT(*) > 1
+              AND (? IS NULL OR
               SUM(CASE WHEN f.file_path LIKE '%' || ? || '%'
                         OR COALESCE(c.exif_camera, '') LIKE '%' || ? || '%'
                        THEN 1 ELSE 0 END) > 0)
@@ -251,7 +259,7 @@ class DedupEngine:
             FROM dedup_groups g
             JOIN dedup_group_files f ON f.group_id = g.id
             JOIN catalog c ON c.path = f.file_path
-            WHERE g.id IN ({placeholders})
+            WHERE g.id IN ({placeholders}) AND c.tombstone = 0
             GROUP BY g.id
             ORDER BY g.id
         """, group_ids)

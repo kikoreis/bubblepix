@@ -165,7 +165,7 @@ class CatalogBuilder:
             os._exit(130)
         return file_count, new_count, upd_count, skip_count, rev_count
 
-    def _print_summary(self, new_count, upd_count, skip_count, rev_count):
+    def _print_summary(self, new_count, upd_count, skip_count, rev_count, refreshed=0):
         if self.dry_run:
             return
         self.db.commit()
@@ -178,6 +178,8 @@ class CatalogBuilder:
         print(f"  {s['total']:>8,} files  ({gb:.1f} GB)")
         print(f"  {new_count:>8,} new  {rev_count:>8,} revived"
               f"  {upd_count:>8,} unchanged")
+        if refreshed:
+            print(f"  {refreshed:>8,} size updates")
         if skip_count:
             print(f"  {skip_count:>8,} skipped (missing or corrupt)")
         if s["no_phash"]:
@@ -216,17 +218,53 @@ class CatalogBuilder:
                 "SELECT path FROM catalog WHERE tombstone = 0"
                 " AND (phash IS NULL OR has_exif = 0)").fetchall()}
 
+        walked = set()
+        refreshed = 0
+        for fp, _, _ in tqdm(paths, desc="Scanning", unit="files"):
+            walked.add(fp)
+            if fp in existing_paths:
+                try:
+                    disk_size = os.path.getsize(fp)
+                except FileNotFoundError:
+                    continue
+                c = self.db.conn.execute(
+                    "UPDATE catalog SET size = ? WHERE path = ? AND size != ?",
+                    (disk_size, fp, disk_size),
+                )
+                if c.rowcount:
+                    refreshed += 1
+        if refreshed:
+            self.db.commit()
+
         if not self.limit:
-            walked = {fp for fp, _, _ in paths}
             stale = existing_paths - walked
             if stale:
                 for path in stale:
                     self.db.conn.execute(
                         "UPDATE catalog SET tombstone = 1 WHERE path = ?", (path,))
                 self.db.commit()
+                # Remove tombstoned files from their dedup groups
+                self.db.conn.execute("""
+                    DELETE FROM dedup_group_files WHERE file_path IN (
+                        SELECT path FROM catalog WHERE tombstone = 1
+                    )
+                """)
+                # Delete groups that now have ≤1 file
+                self.db.conn.execute("""
+                    DELETE FROM dedup_group_files WHERE group_id IN (
+                        SELECT group_id FROM dedup_group_files
+                        GROUP BY group_id HAVING COUNT(*) < 2
+                    )
+                """)
+                self.db.conn.execute("""
+                    DELETE FROM dedup_groups WHERE id NOT IN (
+                        SELECT DISTINCT group_id FROM dedup_group_files
+                    )
+                """)
+                self.db.commit()
                 print(f"  Tombstoned {len(stale):,} stale entries")
 
         with ProcessPoolExecutor(max_workers=self.workers, initializer=_worker_init) as executor:
             futures = self._collect_futures(executor, paths, existing_paths, rescan_paths)
             _, new_count, upd_count, skip_count, rev_count = self._process_futures(executor, futures)
-        self._print_summary(new_count, upd_count, skip_count, rev_count)
+        self._print_summary(new_count, upd_count, skip_count, rev_count, refreshed)

@@ -54,7 +54,7 @@ def _review_group(db, gid, group_type, fcount, mcount, mbytes, has_ingest,
                c.exif_camera, c.exif_gps_lat
         FROM dedup_group_files f
         JOIN catalog c ON c.path = f.file_path
-        WHERE f.group_id = ?
+        WHERE f.group_id = ? AND c.tombstone = 0
         ORDER BY f.is_original DESC, f.similarity DESC
     """, (gid,))
     files = cur.fetchall()
